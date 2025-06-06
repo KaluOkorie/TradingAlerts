@@ -9,6 +9,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # Assets and message parameters
 ASSETS = ["EUR/USD", "GBP/USD", "XAU/USD"]
+START_TIME = "08:00"
 TIME = "08:00-22:00 BST"
 FOCUS_Time = "Focus on 13:00–16:00 BST"
 REASON = "London & New York overlap"
