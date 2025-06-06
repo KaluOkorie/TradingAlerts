@@ -19,55 +19,97 @@ ASSETS = {
     "AUDUSD=X": "AUD/USD",
     "NZDUSD=X": "NZD/USD",
     "USDCAD=X": "USD/CAD",
-    "USDCHF=X": "USD/CHF",
-    "EURJPY=X": "EUR/JPY",
-    "EURGBP=X": "EUR/GBP",
 
-    # ─── Global Indices ────────────────────────────
+    # ─── Indices ───────────────────────────────────
     "^GSPC":     "S&P 500",
     "^IXIC":     "NASDAQ Composite",
     "^DJI":      "Dow Jones Industrial",
     "^GDAXI":    "DAX (Germany)",
     "^FTSE":     "FTSE 100 (UK)",
     "^STOXX50E": "Euro Stoxx 50",
-    "^N225":     "Nikkei 225 (Japan)",
-    "^HSI":      "Hang Seng Index (Hong Kong)",
-    "^AXJO":     "ASX 200 (Australia)",
-    "^BVSP":     "Bovespa (Brazil)",
+    "^N225":     "Nikkei 225",
+    "^HSI":      "Hang Seng Index",
 
-    # ─── Commodities / Metals / Oil ────────────────
+    # ─── Commodities / Futures ─────────────────────
     "GC=F":  "Gold Futures",
     "SI=F":  "Silver Futures",
     "CL=F":  "Crude Oil (WTI)",
     "NG=F":  "Natural Gas",
-    "ZC=F":  "Corn Futures",
-    "ZS=F":  "Soybean Futures",
-    "HG=F":  "Copper Futures",
-    "PL=F":  "Platinum Futures",
+    "ZC=F":  "Corn",
+    "ZS=F":  "Soybeans",
+    "HG=F":  "Copper",
+    "PL=F":  "Platinum",
 
-    # ─── Popular ETFs ──────────────────────────────
-    "SPY":  "SPDR S&P 500 ETF",
-    "QQQ":  "Invesco QQQ Trust",
-    "IWM":  "iShares Russell 2000 ETF",
-    "VTI":  "Vanguard Total Stock Market ETF",
-    "VEA":  "Vanguard FTSE Developed Markets ETF",
-    "AGG":  "iShares Core US Aggregate Bond ETF",
-    "XLF":  "Financial Select Sector ETF",
-    "XLV":  "Health Care Select Sector ETF",
+    # ─── Cryptocurrencies (Top 10 + Stablecoins) ───
+    "BTC-USD":   "Bitcoin",
+    "ETH-USD":   "Ethereum",
+    "SOL-USD":   "Solana",
+    "BNB-USD":   "Binance Coin",
+    "ADA-USD":   "Cardano",
+    "XRP-USD":   "Ripple",
+    "DOGE-USD":  "Dogecoin",
+    "AVAX-USD":  "Avalanche",
+    "DOT-USD":   "Polkadot",
+    "USDT-USD":  "Tether (USDT)",
+    "USDC-USD":  "USD Coin",
 
-    # ─── Blue-Chip Stocks ──────────────────────────
+    # ─── Stocks (Large-Cap / Blue-Chip) ────────────
     "AAPL":   "Apple",
     "MSFT":   "Microsoft",
     "GOOGL":  "Alphabet (Google)",
+    "META":   "Meta Platforms (Facebook)",
     "AMZN":   "Amazon",
-    "TSLA":   "Tesla",
-    "JNJ":    "Johnson & Johnson",
-    "KO":     "Coca-Cola",
-    "WMT":    "Walmart",
-    "V":      "Visa",
-    "PG":     "Procter & Gamble",
     "NVDA":   "NVIDIA",
-    "META":   "Meta Platforms (Facebook)"}
+    "TSLA":   "Tesla",
+    "JPM":    "JPMorgan Chase",
+    "V":      "Visa",
+    "MA":     "Mastercard",
+    "WMT":    "Walmart",
+    "PG":     "Procter & Gamble",
+    "KO":     "Coca-Cola",
+    "JNJ":    "Johnson & Johnson",
+    "UNH":    "UnitedHealth Group",
+    "PEP":    "PepsiCo",
+    "HD":     "Home Depot",
+    "CVX":    "Chevron",
+    "XOM":    "ExxonMobil",
+    "BABA":   "Alibaba",
+    "NFLX":   "Netflix",
+    "INTC":   "Intel",
+
+    # ─── Equity ETFs ───────────────────────────────
+    "SPY":  "SPDR S&P 500 ETF",
+    "QQQ":  "Invesco QQQ Trust",
+    "DIA":  "SPDR Dow Jones ETF",
+    "IWM":  "iShares Russell 2000 ETF",
+    "VOO":  "Vanguard S&P 500 ETF",
+    "VTI":  "Vanguard Total Stock Market ETF",
+    "VEA":  "Vanguard Developed Markets ETF",
+    "VWO":  "Vanguard Emerging Markets ETF",
+
+    # ─── Sector ETFs (Moderate Risk) ───────────────
+    "XLK":  "Technology Select Sector SPDR",
+    "XLF":  "Financial Select Sector SPDR",
+    "XLV":  "Health Care Select Sector SPDR",
+    "XLE":  "Energy Select Sector SPDR",
+    "XLY":  "Consumer Discretionary SPDR",
+    "XLP":  "Consumer Staples Select Sector SPDR",
+    "XLI":  "Industrial Select Sector SPDR",
+    "XLU":  "Utilities Select Sector SPDR",
+
+    # ─── Commodity ETFs ────────────────────────────
+    "GLD":  "SPDR Gold Shares",
+    "SLV":  "iShares Silver Trust",
+    "USO":  "United States Oil Fund",
+    "DBA":  "Invesco Agriculture Fund",
+    "PPLT": "Aberdeen Physical Platinum Shares ETF",
+
+    # ─── Bond & Treasury ETFs ──────────────────────
+    "BND":   "Vanguard Total Bond Market ETF",
+    "AGG":   "iShares Core US Aggregate Bond ETF",
+    "TLT":   "iShares 20+ Year Treasury Bond ETF",
+    "IEF":   "iShares 7-10 Year Treasury Bond ETF",
+    "TIP":   "iShares TIPS Bond ETF"}
 
 # ─── INDICATOR PARAMETERS ────────────────────────────────────────────────────
 SHORT_EMA  = 9
