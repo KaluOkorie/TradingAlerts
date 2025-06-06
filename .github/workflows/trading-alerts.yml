@@ -1,33 +1,33 @@
-name: "Scheduled Trading Alerts"
+name: Scheduled Trading Alerts
 
+# Run every 30 minutes UTC → London runs every 30 minutes (BST or GMT)
 on:
-  # Run at 07:00 UTC (08:00 BST), Monday–Friday
   schedule:
-    - cron: '0 7 * * 1-5'
-  # Allow manual trigger
+    - cron: '*/30 * * * *'
   workflow_dispatch:
 
 jobs:
-  daily-alert:
+  send-signals:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Check out code
+      - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.x
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.x'
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytz requests
+          pip install pandas yfinance requests pytz
 
-      - name: Send Daily Telegram Trading Alert
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      - name: Export Telegram credentials
         run: |
-          python trading_alerts.py
+          echo "TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}" >> $GITHUB_ENV
+          echo "TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}"   >> $GITHUB_ENV
+
+      - name: Run trading signals script
+        run: |
+          python trade_alerts.py
