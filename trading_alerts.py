@@ -12,31 +12,62 @@ TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
 # ─── ASSETS LIST ──────────────────────────────────────────────────────────────
 # Forex pairs, major indices, gold futures (replacing XAU=X), and top ETFs/commodities.
 ASSETS = {
-    # ─── Forex pairs ───────────────────────────────
+    # ─── Forex Pairs ───────────────────────────────
     "EURUSD=X": "EUR/USD",
     "GBPUSD=X": "GBP/USD",
     "USDJPY=X": "USD/JPY",
     "AUDUSD=X": "AUD/USD",
     "NZDUSD=X": "NZD/USD",
     "USDCAD=X": "USD/CAD",
+    "USDCHF=X": "USD/CHF",
+    "EURJPY=X": "EUR/JPY",
+    "EURGBP=X": "EUR/GBP",
 
-    # ─── Indices ───────────────────────────────────
-    "^GSPC":    "S&P 500",
-    "^IXIC":    "NASDAQ Composite",
-    "^DJI":     "Dow Jones Industrial",
-    "^GDAXI":   "DAX (Germany)",
-    "^FTSE":    "FTSE 100 (UK)",
+    # ─── Global Indices ────────────────────────────
+    "^GSPC":     "S&P 500",
+    "^IXIC":     "NASDAQ Composite",
+    "^DJI":      "Dow Jones Industrial",
+    "^GDAXI":    "DAX (Germany)",
+    "^FTSE":     "FTSE 100 (UK)",
+    "^STOXX50E": "Euro Stoxx 50",
+    "^N225":     "Nikkei 225 (Japan)",
+    "^HSI":      "Hang Seng Index (Hong Kong)",
+    "^AXJO":     "ASX 200 (Australia)",
+    "^BVSP":     "Bovespa (Brazil)",
 
     # ─── Commodities / Metals / Oil ────────────────
-    "GC=F":     "Gold Futures",      # Replaced "XAU=X" with "GC=F"
-    "SI=F":     "Silver Futures",
-    "CL=F":     "Crude Oil (WTI)",
+    "GC=F":  "Gold Futures",
+    "SI=F":  "Silver Futures",
+    "CL=F":  "Crude Oil (WTI)",
+    "NG=F":  "Natural Gas",
+    "ZC=F":  "Corn Futures",
+    "ZS=F":  "Soybean Futures",
+    "HG=F":  "Copper Futures",
+    "PL=F":  "Platinum Futures",
 
-    # ─── Popular ETFs (liquid) ─────────────────────
-    "SPY":      "SPDR S&P 500 ETF",
-    "QQQ":      "Invesco QQQ Trust",
-    "IWM":      "iShares Russell 2000 ETF"
-}
+    # ─── Popular ETFs ──────────────────────────────
+    "SPY":  "SPDR S&P 500 ETF",
+    "QQQ":  "Invesco QQQ Trust",
+    "IWM":  "iShares Russell 2000 ETF",
+    "VTI":  "Vanguard Total Stock Market ETF",
+    "VEA":  "Vanguard FTSE Developed Markets ETF",
+    "AGG":  "iShares Core US Aggregate Bond ETF",
+    "XLF":  "Financial Select Sector ETF",
+    "XLV":  "Health Care Select Sector ETF",
+
+    # ─── Blue-Chip Stocks ──────────────────────────
+    "AAPL":   "Apple",
+    "MSFT":   "Microsoft",
+    "GOOGL":  "Alphabet (Google)",
+    "AMZN":   "Amazon",
+    "TSLA":   "Tesla",
+    "JNJ":    "Johnson & Johnson",
+    "KO":     "Coca-Cola",
+    "WMT":    "Walmart",
+    "V":      "Visa",
+    "PG":     "Procter & Gamble",
+    "NVDA":   "NVIDIA",
+    "META":   "Meta Platforms (Facebook)"}
 
 # ─── INDICATOR PARAMETERS ────────────────────────────────────────────────────
 SHORT_EMA  = 9
