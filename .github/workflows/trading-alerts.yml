@@ -30,4 +30,4 @@ jobs:
 
       - name: Run trading signals script
         run: |
-          python trade_alerts.py
+          python trading_alerts.py
