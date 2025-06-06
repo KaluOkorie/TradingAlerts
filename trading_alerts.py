@@ -10,8 +10,8 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 # Assets and message parameters
 ASSETS = ["EUR/USD", "GBP/USD", "XAU/USD"]
 START_TIME = "08:00"
-TIME = "08:00-22:00 BST"
-FOCUS_Time = "Focus on 13:00–16:00 BST"
+TIME_RANGE = "08:00-22:00 BST"
+FOCUS_NOTE = "Focus on 13:00–16:00 BST"
 REASON = "London & New York overlap"
 
 def send_telegram_message(text: str) -> bool:
@@ -28,18 +28,12 @@ def send_telegram_message(text: str) -> bool:
         return False
 
 def should_send() -> bool:
-    """
-    Returns True if current UK time is exactly 08:00 on a weekday (Mon–Fri).
-    """
     london_now = datetime.now(pytz.timezone("Europe/London"))
-    is_weekday = london_now.weekday() < 5        # 0 = Monday, 4 = Friday
-    current_time = london_now.strftime("%H:%M")  # e.g., "08:00"
+    is_weekday = london_now.weekday() < 5
+    current_time = london_now.strftime("%H:%M")
     return is_weekday and current_time == START_TIME
 
 def build_daily_message() -> str:
-    """
-    Constructs the Telegram message for the day.
-    """
     london_now = datetime.now(pytz.timezone("Europe/London"))
     today_str = london_now.strftime("%A, %d %B %Y")
     assets_line = ", ".join(ASSETS)
