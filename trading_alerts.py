@@ -47,7 +47,7 @@ def build_daily_message() -> str:
     )
 
 if __name__ == "__main__":
-    if True:
+    if should_send():
         message = build_daily_message()
         success = send_telegram_message(message)
         if not success:
