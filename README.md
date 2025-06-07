@@ -102,6 +102,12 @@ NVIDIA (NVDA)
 
 Meta (Facebook) (META)
 
+# Crypto Alert Bot
+
+The Python script (CryptoAlert.py) also monitor top USD/USDT 
+cryptocurrency pairs and send concise buy or sell signals to the 
+Telegram bot based on a 5‑condition confluence strategy, Signals are evaluated and sent every 4 hours.
+
 # 🧠 Core Logic
 The bot performs 5 major computations for each asset every hour:
 
