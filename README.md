@@ -1,6 +1,8 @@
 # Automated Trading Signal Bot (1-Hour Interval)
 This Python-based trading signal bot fetches real-time financial data from Yahoo Finance using yfinance, 
-analyzes assets across various markets, and sends actionable long/short signals via Telegram every hour.
+analyzes assets across various markets, and sends actionable long/short signals via Telegram every hour 
+every hour from Monday to Friday (08:00 to 22:00 BST).
+It includes automatic time zone adjustment to maintain accurate timing throughout the year.
 
 # Assets Monitored
 Forex Pairs
