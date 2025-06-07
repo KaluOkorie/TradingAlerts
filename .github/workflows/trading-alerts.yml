@@ -1,9 +1,9 @@
 name: Scheduled Trading Alerts
 
-# Run every 30 minutes UTC → London runs every 30 minutes (BST or GMT)
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    # Every hour at minute 0, from 07:00–22:00 UTC (08:00–23:00 London), Mon–Fri
+    - cron: '0 7-22 * * 1-5'
   workflow_dispatch:
 
 jobs:
@@ -13,7 +13,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
@@ -28,6 +28,6 @@ jobs:
           echo "TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}" >> $GITHUB_ENV
           echo "TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}"   >> $GITHUB_ENV
 
-      - name: Run trading signals script
-        run: |
-          python trading_alerts.py
+      - name: Run trading alerts
+        run: python trading_alerts.py
+
