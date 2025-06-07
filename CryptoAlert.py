@@ -3,6 +3,7 @@ import ccxt
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
+from pytz import timezone
 
 # ─── CONFIG ────────────────────────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -16,7 +17,11 @@ exchange = ccxt.kraken({ 'enableRateLimit': True })
 
 def send_telegram(text: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = { 'chat_id': TELEGRAM_CHAT_ID, 'text': text }
+    payload = {
+        'chat_id': TELEGRAM_CHAT_ID,
+        'text': text,
+        'parse_mode': 'Markdown'
+    }
     requests.post(url, data=payload)
 
 # ─── 1) FILTER PAIRS BY VOLUME & MARKETCAP ────────────────────────────────────
@@ -68,8 +73,8 @@ def compute_signal(df: pd.DataFrame):
         last.close < prev.close,
         last.close < last.open
     ])
-    if bullish:  return 'Consider *BUY*'
-    if bearish: return 'Consider *SELL*'
+    if bullish:  return '📈 *BUY*'
+    if bearish: return '📉 *SELL*'
     return None
 
 # ─── 3) RUN & NOTIFY ───────────────────────────────────────────────────────────
@@ -84,7 +89,13 @@ for sym in candidates:
     except Exception:
         continue
 
+# Get current time in UK timezone
+uk_now = datetime.now(timezone('Europe/London'))
+formatted_time = uk_now.strftime('%A, %d %B %Y — %H:%M %Z')
+
 if alerts:
-    date = datetime.now().strftime('%A, %d %B %Y %H:%M UTC')
-    message = f"*Crypto Alerts — {date}*\n" + '\n'.join(alerts)
-    send_telegram(message)
+    message = f"*🪙 Crypto Alert — {formatted_time}*\n\n" + '\n'.join(alerts)
+else:
+    message = f"*🪙 Crypto Alert — {formatted_time}*\n\nNo signals met all 5 conditions."
+
+send_telegram(message)
