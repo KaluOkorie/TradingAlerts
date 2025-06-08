@@ -3,26 +3,27 @@ import ccxt
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
-from pytz import timezone
+import pytz
 
 # ─── CONFIG ────────────────────────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
 VOLUME_THRESH      = 1_000_000       # $1M 24h volume
 MARKETCAP_THRESH   = 50_000_000      # $50M market cap
-TIMEFRAME          = '4h'            # Candle timeframe
+TIMEFRAME          = '4h'
 
 # ─── UTILS ─────────────────────────────────────────────────────────────────────
 exchange = ccxt.kraken({ 'enableRateLimit': True })
 
 def send_telegram(text: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        'chat_id': TELEGRAM_CHAT_ID,
-        'text': text,
-        'parse_mode': 'Markdown'
-    }
+    payload = { 'chat_id': TELEGRAM_CHAT_ID, 'text': text, 'parse_mode': 'Markdown' }
     requests.post(url, data=payload)
+
+def get_uk_time():
+    now_utc = datetime.utcnow().replace(tzinfo=pytz.utc)
+    uk_time = now_utc.astimezone(pytz.timezone("Europe/London"))
+    return uk_time.strftime('%A, %d %B %Y %H:%M %Z')
 
 # ─── 1) FILTER PAIRS BY VOLUME & MARKETCAP ────────────────────────────────────
 exchange.load_markets()
@@ -46,35 +47,58 @@ def fetch_ohlcv(symbol: str):
     df.set_index(pd.to_datetime(df['ts'], unit='ms'), inplace=True)
     return df[['open','high','low','close','vol']]
 
-
-def compute_signal(df: pd.DataFrame):
+def compute_signal(df: pd.DataFrame, sym: str):
     if len(df) < 30: return None
+
     df['EMA9']  = df['close'].ewm(span=9, adjust=False).mean()
     df['EMA21'] = df['close'].ewm(span=21, adjust=False).mean()
+
     delta = df['close'].diff()
     gain = delta.clip(lower=0)
     loss = (-delta).clip(lower=0)
     df['RSI'] = 100 - (100 / (1 + (gain.ewm(span=14).mean() / loss.ewm(span=14).mean()))).fillna(50)
-    macd = df['close'].ewm(span=12).mean() - df['close'].ewm(span=26).mean()
-    signal = macd.ewm(span=9).mean()
-    df['MACD'] = macd; df['Signal'] = signal
-    last, prev = df.iloc[-1], df.iloc[-2]
+
+    df['MACD']   = df['close'].ewm(span=12).mean() - df['close'].ewm(span=26).mean()
+    df['Signal'] = df['MACD'].ewm(span=9).mean()
+
+    last  = df.iloc[-1]
+    prev  = df.iloc[-2]
+    prev3 = df.iloc[-4:-1]
+
+    recent_high = df['high'].iloc[-6:-2].max()
+    recent_low  = df['low'].iloc[-6:-2].min()
+
+    # ─── Breakout & Retest Logic ───────────────────────────────────────────────
+    breakout_up    = last.close > recent_high
+    breakout_down  = last.close < recent_low
+
+    retest_up      = prev3['low'].min() <= recent_high * 1.01 and last.close > recent_high
+    retest_down    = prev3['high'].max() >= recent_low  * 0.99 and last.close < recent_low
+
     bullish = all([
         last.EMA9  > last.EMA21,
         last.RSI   > 50,
         last.MACD  > last.Signal,
         last.close > prev.close,
-        last.close > last.open
+        last.close > last.open,
+        breakout_up,
+        retest_up
     ])
+
     bearish = all([
         last.EMA9  < last.EMA21,
         last.RSI   < 50,
         last.MACD  < last.Signal,
         last.close < prev.close,
-        last.close < last.open
+        last.close < last.open,
+        breakout_down,
+        retest_down
     ])
-    if bullish:  return '📈 *BUY*'
-    if bearish: return '📉 *SELL*'
+
+    if bullish:
+        return f"🔼 *{sym}* — Consider *BUY*\nBreakout + Retest of resistance at `${recent_high:.2f}` → Price: `${last.close:.2f}`"
+    if bearish:
+        return f"🔽 *{sym}* — Consider *SELL*\nBreakdown + Retest of support at `${recent_low:.2f}` → Price: `${last.close:.2f}`"
     return None
 
 # ─── 3) RUN & NOTIFY ───────────────────────────────────────────────────────────
@@ -83,19 +107,13 @@ alerts = []
 for sym in candidates:
     try:
         df = fetch_ohlcv(sym)
-        action = compute_signal(df)
-        if action:
-            alerts.append(f"🔔 {sym}: {action}")
+        result = compute_signal(df, sym)
+        if result:
+            alerts.append(result)
     except Exception:
         continue
 
-# Get current time in UK timezone
-uk_now = datetime.now(timezone('Europe/London'))
-formatted_time = uk_now.strftime('%A, %d %B %Y — %H:%M %Z')
-
 if alerts:
-    message = f"*🪙 Crypto Alert — {formatted_time}*\n\n" + '\n'.join(alerts)
-else:
-    message = f"*🪙 Crypto Alert — {formatted_time}*\n\nNo signals met all 5 conditions."
-
-send_telegram(message)
+    header = f"*Crypto Alerts — {get_uk_time()}*"
+    message = header + "\n\n" + "\n\n".join(alerts)
+    send_telegram(message)
