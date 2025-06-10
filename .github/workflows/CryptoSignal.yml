@@ -1,33 +1,41 @@
-
 name: CryptoSignal Alert
 
 on:
-  schedule:
-    # Crypto alerts: Every 2 hours at minute 0, every day
-    - cron: '0 */2 * * *'
-  workflow_dispatch:
+  schedule:
+    # Crypto alerts: Every 2 hours at minute 0, every day (UTC)
+    # This means 01:00 BST, 03:00 BST, 05:00 BST etc. (when UK is on BST/UTC+1)
+    - cron: '0 */2 * * *'
+  workflow_dispatch: # This was the misaligned line, now correctly indented
 
 jobs:
-  crypto-alert:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+  crypto-alert:
+    runs-on: ubuntu-latest
+    # If you're using GitHub Environments for secrets, you might add:
+    # environment: YourEnvironmentName
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
 
-      - name: Install crypto dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install ccxt pandas requests
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5 # Updated to v5, recommend latest for stability
+        with:
+          python-version: '3.11'
 
-      - name: Export Telegram credentials
-        run: |
-          echo "TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}" >> $GITHUB_ENV
-          echo "TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}" >> $GITHUB_ENV
+      - name: Install crypto dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ccxt pandas requests
 
-      - name: Run crypto alerts
-        run: python CryptoAlert.py
+      - name: Export Telegram credentials
+        # It's generally better to pass secrets directly as environment variables
+        # to the run step if only that step needs them, rather than GITHUB_ENV,
+        # unless other steps explicitly need them.
+        # However, if your Python script reads from environment variables,
+        # this approach is perfectly valid.
+        run: |
+          echo "TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}" >> $GITHUB_ENV
+          echo "TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}" >> $GITHUB_ENV
+
+      - name: Run crypto alerts
+        run: python CryptoAlert.py
