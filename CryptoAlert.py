@@ -157,7 +157,8 @@ def fetch_news_sentiment():
         pass
     return coin_news_counts
 
-def compute_duration_target_atr(df, atr_mult=1.5, max_candles=MAX_CANDLES):
+# --------------- CHANGE ATR MULTIPLIER HERE ----------------
+def compute_duration_target_atr(df, atr_mult=1.0, max_candles=MAX_CANDLES):  # <--- changed 1.5 to 1.0
     targets = []
     for idx in range(len(df)):
         cur_price = df['close'].iloc[idx]
@@ -191,10 +192,11 @@ def create_features_and_label(df):
     atr_indicator = AverageTrueRange(high=df['high'], low=df['low'], close=df['close'], window=14)
     df['atr'] = atr_indicator.average_true_range()
     df['max_future_2'] = np.maximum(df['close'].shift(-1), df['close'].shift(-2))
-    df['target'] = ((df['max_future_2'] - df['close']) > (1.5 * df['atr'])).astype(int)
+    df['target'] = ((df['max_future_2'] - df['close']) > (1.0 * df['atr'])).astype(int) # <--- changed 1.5 to 1.0
 
-    df = compute_duration_target_atr(df, atr_mult=1.5, max_candles=MAX_CANDLES)
+    df = compute_duration_target_atr(df, atr_mult=1.0, max_candles=MAX_CANDLES) # <--- changed 1.5 to 1.0
     return df.dropna()
+# ------------------------------------------------------------
 
 def calc_dmi(df):
     adx = ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14)
