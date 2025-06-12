@@ -1,425 +1,410 @@
 import os
-
-import ccxt
-
 import requests
-
 import pandas as pd
-
 from datetime import datetime, timedelta
-
 import pytz
+from ta.trend import ADXIndicator
+from ta.volatility import AverageTrueRange
+import xgboost as xgb
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, mean_absolute_error
+import numpy as np
 
+from dotenv import load_dotenv
+load_dotenv()
 
+# --- CONFIG ---
+KUCOIN_API_URL = "https://api.kucoin.com"
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
+COINMARKETCAP_API_KEY = os.environ.get("COINMARKETCAP_API_KEY")
+COINMARKETCAP_API_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
+CRYPTOCOMPARE_API_KEY = os.environ.get("CRYPTOCOMPARE_API_KEY")
+CRYPTOCOMPARE_NEWS_URL = "https://min-api.cryptocompare.com/data/v2/news/?lang=EN"
 
-# ─── CONFIG ────────────────────────────────────────────────────────────────────
+DATA_DIR = "data"
+MODEL_DIR = "models"
+os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(MODEL_DIR, exist_ok=True)
 
-# Make sure to set these environment variables in your system
+CANDLE_INTERVAL = "30min"
+WINDOW_DAYS = 7
+RETRAIN_DAYS = 3
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CONFIDENCE_THRESHOLD = 0.85
+TP_PCT = 0.04
+SL_PCT = -0.02
+CANDLE_MIN = 30
+MAX_CANDLES = 24
+MIN_DURATION = 30
+MAX_DURATION = 720
 
-TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
-
-
-
-VOLUME_THRESH      = 1_000_000       # $1M 24h volume
-
-MARKETCAP_THRESH   = 50_000_000      # $50M market cap
-
-TIMEFRAME          = '4h'
-
-PROFIT_GOAL_USD    = 5.00            # ## NEW ## Minimum desired profit in USD per trade
-
-
-
-# ─── UTILS ─────────────────────────────────────────────────────────────────────
-
-exchange = ccxt.kraken({ 'enableRateLimit': True })
-
-
-
-def send_telegram(text: str):
-
-    """Sends a message to a Telegram chat."""
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-
-    payload = { 'chat_id': TELEGRAM_CHAT_ID, 'text': text, 'parse_mode': 'Markdown' }
-
-    try:
-
-        requests.post(url, data=payload)
-
-    except Exception as e:
-
-        print(f"Error sending Telegram message: {e}")
-
-
+MIN_MARKET_CAP = 300_000_000
+MIN_VOLUME = 1_000_000
 
 def get_uk_time_header():
-
-    """Gets the current UK time and formats it for the message header."""
-
     now_utc = datetime.utcnow().replace(tzinfo=pytz.utc)
-
     uk_time = now_utc.astimezone(pytz.timezone("Europe/London"))
-
-    # ## NEW ## Updated format to match the user request
-
-    return f"📡 *Crypto Alerts — {uk_time.strftime('%A, %d %B %Y %H:%M %Z')}*"
-
-
-
-# ─── 1) FILTER PAIRS BY VOLUME & MARKETCAP ────────────────────────────────────
-
-def get_candidate_symbols():
-
-    """Filters trading pairs by 24h volume and market capitalization."""
-
-    print("Filtering pairs by volume and market cap...")
-
-    exchange.load_markets()
-
-    # Fetch tickers for pairs ending in /USD or /USDT
-
-    tickers = exchange.fetch_tickers([s for s in exchange.symbols if s.endswith('/USD') or s.endswith('/USDT')])
-
-    high_vol = { sym for sym, data in tickers.items() if data.get('quoteVolume', 0) >= VOLUME_THRESH }
-
-    
-
-    # Fetch market cap data from CoinGecko
-
-    cg_url = "https://api.coingecko.com/api/v3/coins/markets"
-
-    cg_params = { 'vs_currency': 'usd', 'order':'market_cap_desc', 'per_page':250, 'page':1 }
-
-    cg_response = requests.get(cg_url, params=cg_params)
-
-    cg = cg_response.json()
-
-    
-
-    # Create a set of symbols that meet the market cap threshold
-
-    market_cap_ok = { f"{item['symbol'].upper()}/USD" for item in cg if item.get('market_cap', 0) >= MARKETCAP_THRESH }
-
-    
-
-    # Find the intersection of both sets and sort them
-
-    candidates = sorted(list(high_vol & market_cap_ok))
-
-    print(f"Found {len(candidates)} candidates.")
-
-    return candidates
-
-
-
-# ─── 2) FETCH & SIGNAL TEST ────────────────────────────────────────────────────
-
-def fetch_ohlcv(symbol: str):
-
-    """Fetches OHLCV data for a given symbol."""
-
-    since = exchange.parse8601((datetime.utcnow() - timedelta(days=30)).isoformat()) # Fetch more data for ATR stability
-
-    ohlcv = exchange.fetch_ohlcv(symbol, TIMEFRAME, since)
-
-    df = pd.DataFrame(ohlcv, columns=['ts','open','high','low','close','vol'])
-
-    df.set_index(pd.to_datetime(df['ts'], unit='ms'), inplace=True)
-
-    return df[['open','high','low','close','vol']]
-
-
-
-def compute_signal(df: pd.DataFrame, sym: str):
-
-    """Computes technical indicators and generates a trade signal if conditions are met."""
-
-    if len(df) < 30: return None
-
-
-
-    # ## NEW ## Calculate ATR (Average True Range)
-
-    df['prev_close'] = df['close'].shift(1)
-
-    df['tr1'] = df['high'] - df['low']
-
-    df['tr2'] = abs(df['high'] - df['prev_close'])
-
-    df['tr3'] = abs(df['low'] - df['prev_close'])
-
-    df['TR'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
-
-    df['ATR'] = df['TR'].ewm(span=14, adjust=False).mean()
-
-
-
-    # Standard Indicators
-
-    df['EMA9']  = df['close'].ewm(span=9, adjust=False).mean()
-
-    df['EMA21'] = df['close'].ewm(span=21, adjust=False).mean()
-
-    delta = df['close'].diff()
-
-    gain = delta.clip(lower=0)
-
-    loss = (-delta).clip(lower=0)
-
-    df['RSI'] = 100 - (100 / (1 + (gain.ewm(span=14).mean() / loss.ewm(span=14).mean()))).fillna(50)
-
-    df['MACD']   = df['close'].ewm(span=12).mean() - df['close'].ewm(span=26).mean()
-
-    df['Signal'] = df['MACD'].ewm(span=9).mean()
-
-    
-
-    last  = df.iloc[-1]
-
-    prev  = df.iloc[-2]
-
-    prev3 = df.iloc[-4:-1]
-
-    
-
-    recent_high = df['high'].iloc[-6:-2].max()
-
-    recent_low  = df['low'].iloc[-6:-2].min()
-
-
-
-    # ─── Breakout & Retest Logic ───────────────────────────────────────────────
-
-    breakout_up    = last.close > recent_high
-
-    breakout_down  = last.close < recent_low
-
-    retest_up      = prev3['low'].min() <= recent_high * 1.01 and last.close > recent_high
-
-    retest_down    = prev3['high'].max() >= recent_low  * 0.99 and last.close < recent_low
-
-    
-
-    # ─── Signal Conditions ─────────────────────────────────────────────────────
-
-    is_bullish = all([
-
-        last.EMA9  > last.EMA21,
-
-        last.RSI   > 50,
-
-        last.MACD  > last.Signal,
-
-        last.close > last.open,
-
-        breakout_up,
-
-        retest_up
-
-    ])
-
-    
-
-    is_bearish = all([
-
-        last.EMA9  < last.EMA21,
-
-        last.RSI   < 50,
-
-        last.MACD  < last.Signal,
-
-        last.close < last.open,
-
-        breakout_down,
-
-        retest_down
-
-    ])
-
-
-
-    if is_bullish:
-
-        # ## NEW ## Dynamic TP/SL and message formatting for bullish signal
-
-        entry_price = last.close
-
-        last_atr = last.ATR
-
-        
-
-        # SL cannot be zero or negative
-
-        if last_atr <= 0: return None
-
-
-
-        take_profit = entry_price + (0.5 * last_atr)
-
-        stop_loss = entry_price - (0.2 * last_atr)
-
-
-
-        # Ensure the trade meets the minimum profit goal
-
-        if (take_profit - entry_price) < PROFIT_GOAL_USD:
-
+    return f"*🚀 CRYPTO TRADE SIGNAL  — {uk_time.strftime('%A, %d %B %Y %H:%M %Z')}*"
+
+def send_telegram_message(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'}
+    try:
+        resp = requests.post(url, data=payload, timeout=20)
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"Failed to send Telegram message: {e}")
+
+def fetch_kucoin_usdt_symbols():
+    try:
+        resp = requests.get(f"{KUCOIN_API_URL}/api/v2/symbols", timeout=15)
+        resp.raise_for_status()
+        symbols = resp.json()['data']
+        symbols_filtered = [
+            {"symbol": s['symbol'], "base": s['baseCurrency'], "quote": s['quoteCurrency']}
+            for s in symbols if s['symbol'].endswith('-USDT') and s['enableTrading']
+        ]
+        return symbols_filtered
+    except Exception as e:
+        return []
+
+def fetch_coinmarketcap_market_data(min_market_cap=MIN_MARKET_CAP, min_volume=MIN_VOLUME, max_coins=2000):
+    url = COINMARKETCAP_API_URL
+    per_page = 500  # max per CMC API
+    headers = {
+        "X-CMC_PRO_API_KEY": COINMARKETCAP_API_KEY,
+        "Accepts": "application/json"
+    }
+    filtered = {}
+    for start in range(1, max_coins+1, per_page):
+        params = {
+            "start": start,
+            "limit": per_page,
+            "convert": "USD"
+        }
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=30)
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+            if not data:
+                break
+            for c in data:
+                symbol = c["symbol"].upper()
+                market_cap = c["quote"]["USD"]["market_cap"]
+                volume_24h = c["quote"]["USD"]["volume_24h"]
+                filtered[symbol] = {
+                    "market_cap": market_cap,
+                    "volume_24h": volume_24h,
+                    "name": c.get("name"),
+                }
+            if len(data) < per_page:
+                break
+        except Exception:
+            break
+    return filtered
+
+def fetch_kucoin_ohlcv(symbol, interval="30min", limit=200):
+    limit = max(30, min(limit, 200))
+    url = f"{KUCOIN_API_URL}/api/v1/market/candles"
+    params = {"symbol": symbol, "type": interval, "limit": limit}
+    try:
+        resp = requests.get(url, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json().get('data', [])
+        if not data or len(data) < 2:
             return None
+        df = pd.DataFrame(data, columns=["time", "open", "close", "high", "low", "volume", "turnover"])
+        df = df.iloc[::-1].reset_index(drop=True)  # oldest first
+        df['time'] = pd.to_numeric(df['time'])
+        df['timestamp'] = pd.to_datetime(df['time'], unit='s')
+        for col in ['open','close','high','low','volume','turnover']:
+            df[col] = pd.to_numeric(df[col])
+        df['timestamp'] = df['timestamp'].dt.tz_localize(None)
+        return df.reset_index(drop=True)
+    except Exception:
+        return None
 
+def fetch_news_sentiment():
+    headers = {'Authorization': f'Apikey {CRYPTOCOMPARE_API_KEY}'}
+    coin_news_counts = {}
+    try:
+        resp = requests.get(CRYPTOCOMPARE_NEWS_URL, headers=headers, timeout=10)
+        resp.raise_for_status()
+        news_data = resp.json().get('Data', [])
+        for article in news_data:
+            try:
+                tags = article.get('tags', [])
+                title = article.get('title', '').lower()
+                is_bullish = any(word in title for word in [
+                    'rise', 'bull', 'breakout', 'gain', 'pump', 'spike', 'surge', 'rally'
+                ])
+                is_bearish = any(word in title for word in [
+                    'fall', 'bear', 'drop', 'crash', 'dump', 'slump', 'plunge', 'collapse'
+                ])
+                for tag in tags:
+                    if tag.endswith('USDT'):
+                        key = tag.upper().replace("-", "")
+                        if key not in coin_news_counts:
+                            coin_news_counts[key] = {"bullish": 0, "bearish": 0}
+                        if is_bullish:
+                            coin_news_counts[key]["bullish"] += 1
+                        if is_bearish:
+                            coin_news_counts[key]["bearish"] += 1
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return coin_news_counts
 
+def compute_duration_target_atr(df, atr_mult=1.5, max_candles=MAX_CANDLES):
+    targets = []
+    for idx in range(len(df)):
+        cur_price = df['close'].iloc[idx]
+        cur_atr = df['atr'].iloc[idx]
+        found = False
+        for forward in range(1, max_candles+1):
+            if idx + forward >= len(df):
+                break
+            future_price = df['close'].iloc[idx + forward]
+            up_trigger = cur_price + atr_mult * cur_atr
+            down_trigger = cur_price - atr_mult * cur_atr
+            if future_price >= up_trigger or future_price <= down_trigger:
+                targets.append(forward * CANDLE_MIN)
+                found = True
+                break
+        if not found:
+            targets.append(max_candles * CANDLE_MIN)
+    df['duration_target'] = targets
+    return df
 
-        risk_pct = (abs(entry_price - stop_loss) / entry_price) * 100
+def create_features_and_label(df):
+    df['roc_5'] = df['close'].pct_change(5) * 100
+    df['roc_15'] = df['close'].pct_change(15) * 100
+    adx_indicator = ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14)
+    df['adx'] = adx_indicator.adx()
+    df['adx_pos'] = adx_indicator.adx_pos()
+    df['adx_neg'] = adx_indicator.adx_neg()
+    df['hour'] = df['timestamp'].dt.hour
+    df['day'] = df['timestamp'].dt.dayofweek
 
-        reward_pct = (abs(take_profit - entry_price) / entry_price) * 100
+    atr_indicator = AverageTrueRange(high=df['high'], low=df['low'], close=df['close'], window=14)
+    df['atr'] = atr_indicator.average_true_range()
+    df['max_future_2'] = np.maximum(df['close'].shift(-1), df['close'].shift(-2))
+    df['target'] = ((df['max_future_2'] - df['close']) > (1.5 * df['atr'])).astype(int)
 
+    df = compute_duration_target_atr(df, atr_mult=1.5, max_candles=MAX_CANDLES)
+    return df.dropna()
 
+def calc_dmi(df):
+    adx = ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14)
+    return adx.adx().iloc[-1], adx.adx_pos().iloc[-1], adx.adx_neg().iloc[-1]
 
-        return (
+def rule_based_check(df):
+    price = df['close'].iloc[-1]
+    breakout_threshold = df['close'].iloc[-100:].quantile(0.9)
+    roc_5 = df['close'].pct_change(5).iloc[-1] * 100
+    adx_val, adx_pos, adx_neg = calc_dmi(df)
+    bullish = price > breakout_threshold and roc_5 > 0.5 and adx_val > 20 and adx_pos > adx_neg
+    return bullish, adx_val
 
-            f"🔔 *{sym}* — Consider 📈*BUY*\n"
+def train_models(symbol):
+    csv_path = os.path.join(DATA_DIR, f"{symbol.replace('-', '_')}.csv")
+    if not os.path.exists(csv_path):
+        return None, None
+    df = pd.read_csv(csv_path, parse_dates=['timestamp'])
+    df = create_features_and_label(df)
+    features = ['roc_5', 'roc_15', 'adx', 'adx_pos', 'adx_neg', 'hour', 'day', 'atr']
+    X = df[features]
+    y = df['target']
+    y_reg = df['duration_target'].clip(MIN_DURATION, MAX_DURATION)
+    value_counts = y.value_counts()
+    if len(value_counts) < 2 or (value_counts < 2).any():
+        return None, None
+    X_train, X_val, y_train, y_val, yreg_train, yreg_val = train_test_split(
+        X, y, y_reg, test_size=0.2, stratify=y, random_state=42
+    )
+    model_cls = xgb.XGBClassifier(use_label_encoder=False, eval_metric='logloss', verbosity=0)
+    model_cls.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+    model_reg = xgb.XGBRegressor(objective='reg:squarederror')
+    model_reg.fit(X_train, yreg_train, eval_set=[(X_val, yreg_val)], verbose=False)
+    model_cls.save_model(os.path.join(MODEL_DIR, f"{symbol.replace('-', '_')}_xgb_cls.json"))
+    model_reg.save_model(os.path.join(MODEL_DIR, f"{symbol.replace('-', '_')}_xgb_reg.json"))
+    return model_cls, model_reg
 
-            f"📍 Breakout + Retest of Resistance at *${recent_high:,.2f}* → _Current Price_: *${entry_price:,.2f}*\n"
+def load_models(symbol):
+    cls_path = os.path.join(MODEL_DIR, f"{symbol.replace('-', '_')}_xgb_cls.json")
+    reg_path = os.path.join(MODEL_DIR, f"{symbol.replace('-', '_')}_xgb_reg.json")
+    if not os.path.exists(cls_path) or not os.path.exists(reg_path):
+        return None, None
+    model_cls = xgb.XGBClassifier()
+    model_cls.load_model(cls_path)
+    model_reg = xgb.XGBRegressor()
+    model_reg.load_model(reg_path)
+    return model_cls, model_reg
 
-            f"🟩 Entry:  `${entry_price:,.2f}`\n"
+def predict_breakout(df, model_cls):
+    features = ['roc_5', 'roc_15', 'adx', 'adx_pos', 'adx_neg', 'hour', 'day', 'atr']
+    latest = df.iloc[-1:]
+    proba = model_cls.predict_proba(latest[features])[0][1]
+    return proba
 
-            f"🎯 TP: `${take_profit:,.2f}` | 🛑 SL: `${stop_loss:,.2f}`\n"
+def predict_duration(df, model_reg):
+    features = ['roc_5', 'roc_15', 'adx', 'adx_pos', 'adx_neg', 'hour', 'day', 'atr']
+    latest = df.iloc[-1:]
+    duration = model_reg.predict(latest[features])[0]
+    duration = int(np.clip(round(duration), MIN_DURATION, MAX_DURATION))
+    return duration
 
-            f"📊 ATR(14): `${last_atr:,.2f}` | Risk: {risk_pct:.1f}%, Reward: {reward_pct:.1f}% | Direction: *Bullish*"
+def save_ohlcv(symbol, df):
+    path = os.path.join(DATA_DIR, f"{symbol.replace('-', '_')}.csv")
+    df.to_csv(path, index=False)
 
-        )
-
-
-
-    if is_bearish:
-
-        # ## NEW ## Dynamic TP/SL and message formatting for bearish signal
-
-        entry_price = last.close
-
-        last_atr = last.ATR
-
-        
-
-        # SL cannot be zero or negative
-
-        if last_atr <= 0: return None
-
-
-
-        # Note: Formulas are reversed for a short/sell position
-
-        take_profit = entry_price - (0.5 * last_atr)
-
-        stop_loss = entry_price + (0.2 * last_atr)
-
-        
-
-        # Ensure the trade meets the minimum profit goal
-
-        if (entry_price - take_profit) < PROFIT_GOAL_USD:
-
-            return None
-
-            
-
-        risk_pct = (abs(entry_price - stop_loss) / entry_price) * 100
-
-        reward_pct = (abs(take_profit - entry_price) / entry_price) * 100
-
-
-
-        return (
-
-            f"🔔 *{sym}* — Consider 📉*SELL*\n"
-
-            f"📍 Breakdown + Retest of Support at *${recent_low:,.2f}* → _Current Price_: *${entry_price:,.2f}*\n"
-
-            f"🟥 Entry:  `${entry_price:,.2f}`\n"
-
-            f"🎯 TP: `${take_profit:,.2f}` | 🛑 SL: `${stop_loss:,.2f}`\n"
-
-            f"📊 ATR(14): `${last_atr:,.2f}` | Risk: {risk_pct:.1f}%, Reward: {reward_pct:.1f}% | Direction: *Bearish*"
-
-        )
-
-        
-
-    return None
-
-
-
-# ─── 3) RUN & NOTIFY ───────────────────────────────────────────────────────────
+def format_signal_line(base, symbol, confidence_pct, roc_5, roc_15, news_str, breakout_level, price, duration, sl, tp):
+    return (
+        f"🚀 *{base.upper()}* ({symbol.replace('-', '/')})\n"
+        f"  Confidence: {confidence_pct}% | ROC5: {roc_5:.2f}% | ROC15: {roc_15:.2f}% | News: {news_str}\n"
+        f"  Breakout > ${breakout_level:.4f} | Price: ${price:.4f} | Duration: {duration}min\n"
+        f"  SL: ${sl:.4f} | TP: ${tp:.4f}\n"
+    )
 
 def main():
+    kucoin_symbols = fetch_kucoin_usdt_symbols()
+    kucoin_bases = set([sym['base'].upper() for sym in kucoin_symbols])
+    cmc_data = fetch_coinmarketcap_market_data()
+    available_bases = []
+    for base in kucoin_bases:
+        cmc_entry = cmc_data.get(base)
+        if cmc_entry:
+            if (cmc_entry["market_cap"] is not None and cmc_entry["market_cap"] >= MIN_MARKET_CAP and
+                cmc_entry["volume_24h"] is not None and cmc_entry["volume_24h"] >= MIN_VOLUME):
+                available_bases.append(base)
 
-    """Main function to run the alert scanner."""
+    news_sentiment = fetch_news_sentiment()
+    market_bullish_news = 0
+    market_bearish_news = 0
+    try:
+        resp = requests.get(CRYPTOCOMPARE_NEWS_URL, headers={'Authorization': f'Apikey {CRYPTOCOMPARE_API_KEY}'}, timeout=10)
+        resp.raise_for_status()
+        news_data = resp.json().get('Data', [])
+        for article in news_data:
+            title = article.get('title', '').lower()
+            is_bullish = any(word in title for word in [
+                'rise', 'bull', 'breakout', 'gain', 'pump', 'spike', 'surge', 'rally',
+                'altcoin season', 'altcoin rally', 'crypto surge', 'market breakout', 'ath', 'all time high'
+            ])
+            is_bearish = any(word in title for word in [
+                'fall', 'bear', 'drop', 'crash', 'dump', 'slump', 'plunge', 'collapse', 'market correction'
+            ])
+            if is_bullish:
+                market_bullish_news += 1
+            if is_bearish:
+                market_bearish_news += 1
+    except Exception:
+        pass
 
-    if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]):
+    analyzed_pairs = []
+    skipped_pairs = []
+    signals_sent = 0
+    bullish_news_total = 0
+    bearish_news_total = 0
 
-        print("Error: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID environment variables must be set.")
-
-        return
-
-
-
-    candidates = get_candidate_symbols()
-
-    alerts = []
-
-    print(f"\nScanning {len(candidates)} candidates for signals...")
-
-    
-
-    for i, sym in enumerate(candidates):
-
-        print(f"  [{i+1}/{len(candidates)}] Checking {sym}...")
-
-        try:
-
-            df = fetch_ohlcv(sym)
-
-            result = compute_signal(df, sym)
-
-            if result:
-
-                print(f"    -> Signal FOUND for {sym}!")
-
-                alerts.append(result)
-
-        except ccxt.NetworkError as e:
-
-            print(f"    -> Network error fetching {sym}: {e}")
-
+    signals = []
+    for sym_info in kucoin_symbols:
+        symbol = sym_info['symbol']
+        base = sym_info['base'].upper()
+        quote = sym_info['quote']
+        if base not in available_bases:
+            skipped_pairs.append(symbol)
             continue
 
-        except Exception as e:
-
-            print(f"    -> An unexpected error occurred with {sym}: {e}")
-
+        df = fetch_kucoin_ohlcv(symbol, interval="30min", limit=200)
+        if df is None:
+            skipped_pairs.append(symbol)
+            continue
+        if len(df) < 30:
+            skipped_pairs.append(symbol)
             continue
 
-            
+        save_ohlcv(symbol, df)
 
-    if alerts:
+        model_cls, model_reg = load_models(symbol)
+        cls_path = os.path.join(MODEL_DIR, f"{symbol.replace('-', '_')}_xgb_cls.json")
+        reg_path = os.path.join(MODEL_DIR, f"{symbol.replace('-', '_')}_xgb_reg.json")
+        retrain_needed = True
+        if os.path.exists(cls_path) and os.path.exists(reg_path):
+            mtime = datetime.utcfromtimestamp(os.path.getmtime(cls_path))
+            if (datetime.utcnow() - mtime).days < RETRAIN_DAYS:
+                retrain_needed = False
+        if model_cls is None or model_reg is None or retrain_needed:
+            model_cls, model_reg = train_models(symbol)
+            if model_cls is None or model_reg is None:
+                skipped_pairs.append(symbol)
+                continue
 
-        print(f"\nFound {len(alerts)} alerts. Sending to Telegram.")
+        df = create_features_and_label(df)
+        bullish, adx_val = rule_based_check(df)
+        if not bullish:
+            skipped_pairs.append(symbol)
+            continue
 
-        header = get_uk_time_header()
+        proba = predict_breakout(df, model_cls)
 
-        message = header + "\n\n" + "\n\n".join(alerts)
+        coin_key = symbol.replace("-", "").upper()
+        news_counts = news_sentiment.get(coin_key, {"bullish": 0, "bearish": 0})
+        bullish_news = news_counts["bullish"]
+        bearish_news = news_counts["bearish"]
+        bullish_news_total += bullish_news
+        bearish_news_total += bearish_news
 
-        send_telegram(message)
+        total_bullish = bullish_news + market_bullish_news // 5
+        total_bearish = bearish_news + market_bearish_news // 5
 
+        if total_bullish + total_bearish > 0:
+            news_factor = 0.5 + 0.25 * (total_bullish - total_bearish) / (total_bullish + total_bearish)
+        else:
+            news_factor = 0.5
+
+        confidence = proba * 0.8 + news_factor * 0.2
+        if confidence < CONFIDENCE_THRESHOLD:
+            analyzed_pairs.append(symbol)
+            continue
+
+        roc_5 = df['roc_5'].iloc[-1] if 'roc_5' in df.columns else df['close'].pct_change(5).iloc[-1] * 100
+        roc_15 = df['roc_15'].iloc[-1] if 'roc_15' in df.columns else df['close'].pct_change(15).iloc[-1] * 100
+        breakout_level = df['close'].iloc[-100:].quantile(0.9)
+        price = df['close'].iloc[-1]
+        duration = predict_duration(df, model_reg)
+        sl = price * 0.985
+        tp = price * 1.04
+        confidence_pct = int(confidence * 100)
+        news_str = f"B{total_bullish}/R{total_bearish}"
+
+        signals.append(format_signal_line(
+            base, symbol, confidence_pct, roc_5, roc_15, news_str,
+            breakout_level, price, duration, sl, tp
+        ))
+        signals_sent += 1
+        analyzed_pairs.append(symbol)
+
+    print("\n===== FINAL SUMMARY =====")
+    print(f"Analyzed pairs: {len(analyzed_pairs)}")
+    print(f"Skipped pairs: {len(skipped_pairs)}")
+    print(f"Sent signals: {signals_sent}")
+    print(f"Bullish news items: {bullish_news_total} (market-wide: {market_bullish_news})")
+    print(f"Bearish news items: {bearish_news_total} (market-wide: {market_bearish_news})")
+    print(f"--- {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC - Bot Finished ---")
+
+    if signals:
+        uk_time = get_uk_time_header()
+        full_message = (
+            f"{uk_time}\n\n"
+            f"*ALERT: {signals_sent} Trade Signals*\n\n" +
+            "\n".join(signals)
+        )
+        send_telegram_message(full_message)
     else:
-
-        print("\nScan complete. No alerts to send.")
-
-
+        send_telegram_message(f"{get_uk_time_header()}\n\nNo qualifying trade signals found this run.")
 
 if __name__ == "__main__":
-
     main()
