@@ -34,8 +34,8 @@ RETRAIN_DAYS = 3
 CONFIDENCE_THRESHOLD = 0.85
 TP_PCT = 0.04
 SL_PCT = -0.02
-CANDLE_MIN = 30
-MAX_CANDLES = 24
+CANDLE_MIN = 30  # 30min candles
+MAX_CANDLES = int(60 / (CANDLE_MIN / 60))  # 1 hour max duration (2 candles for 30min)
 MIN_DURATION = 30
 MAX_DURATION = 720
 
@@ -157,8 +157,32 @@ def fetch_news_sentiment():
         pass
     return coin_news_counts
 
-# --------------- CHANGE ATR MULTIPLIER HERE ----------------
-def compute_duration_target_atr(df, atr_mult=1.0, max_candles=MAX_CANDLES):  # <--- changed 1.5 to 1.0
+# --- ATR-based TP/SL ML Duration Label ---
+def compute_duration_to_tp_sl_atr(df, tp_mult=2, sl_mult=1, max_candles=MAX_CANDLES):
+    durations = []
+    for idx in range(len(df)):
+        entry = df['close'].iloc[idx]
+        atr = df['atr'].iloc[idx]
+        tp = entry + tp_mult * atr
+        sl = entry - sl_mult * atr
+        duration = 0
+        for forward in range(1, max_candles + 1):
+            if idx + forward >= len(df):
+                break
+            high = df['high'].iloc[idx + forward]
+            low = df['low'].iloc[idx + forward]
+            if high >= tp:
+                duration = forward
+                break
+            if low <= sl:
+                duration = -forward
+                break
+        durations.append(duration)
+    df['duration_to_tp_sl_atr'] = durations
+    return df
+
+# --- Legacy duration target for backward compatibility (relaxed ATR multiplier) ---
+def compute_duration_target_atr(df, atr_mult=0.75, max_candles=MAX_CANDLES):
     targets = []
     for idx in range(len(df)):
         cur_price = df['close'].iloc[idx]
@@ -191,12 +215,21 @@ def create_features_and_label(df):
 
     atr_indicator = AverageTrueRange(high=df['high'], low=df['low'], close=df['close'], window=14)
     df['atr'] = atr_indicator.average_true_range()
-    df['max_future_2'] = np.maximum(df['close'].shift(-1), df['close'].shift(-2))
-    df['target'] = ((df['max_future_2'] - df['close']) > (1.0 * df['atr'])).astype(int) # <--- changed 1.5 to 1.0
 
-    df = compute_duration_target_atr(df, atr_mult=1.0, max_candles=MAX_CANDLES) # <--- changed 1.5 to 1.0
+    # --- ATR-based TP/SL columns ---
+    df['tp_atr'] = df['close'] + 2 * df['atr']
+    df['sl_atr'] = df['close'] - 1 * df['atr']
+
+    df['max_future_2'] = np.maximum(df['close'].shift(-1), df['close'].shift(-2))
+
+    # --- Relaxed SPIKE LOGIC (0.75 x ATR) ---
+    df['target'] = ((df['max_future_2'] - df['close']) > (0.75 * df['atr'])).astype(int)
+
+    # --- ATR-based ML Duration Label ---
+    df = compute_duration_to_tp_sl_atr(df, tp_mult=2, sl_mult=1, max_candles=MAX_CANDLES)
+    # --- Legacy duration for reference ---
+    df = compute_duration_target_atr(df, atr_mult=0.75, max_candles=MAX_CANDLES)
     return df.dropna()
-# ------------------------------------------------------------
 
 def calc_dmi(df):
     adx = ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14)
@@ -204,7 +237,8 @@ def calc_dmi(df):
 
 def rule_based_check(df):
     price = df['close'].iloc[-1]
-    breakout_threshold = df['close'].iloc[-100:].quantile(0.9)
+    # --- Relaxed breakout threshold (0.7 quantile) ---
+    breakout_threshold = df['close'].iloc[-100:].quantile(0.7)
     roc_5 = df['close'].pct_change(5).iloc[-1] * 100
     adx_val, adx_pos, adx_neg = calc_dmi(df)
     bullish = price > breakout_threshold and roc_5 > 0.5 and adx_val > 20 and adx_pos > adx_neg
@@ -219,7 +253,7 @@ def train_models(symbol):
     features = ['roc_5', 'roc_15', 'adx', 'adx_pos', 'adx_neg', 'hour', 'day', 'atr']
     X = df[features]
     y = df['target']
-    y_reg = df['duration_target'].clip(MIN_DURATION, MAX_DURATION)
+    y_reg = df['duration_to_tp_sl_atr'].clip(MIN_DURATION, MAX_DURATION)
     value_counts = y.value_counts()
     if len(value_counts) < 2 or (value_counts < 2).any():
         return None, None
@@ -262,13 +296,25 @@ def save_ohlcv(symbol, df):
     path = os.path.join(DATA_DIR, f"{symbol.replace('-', '_')}.csv")
     df.to_csv(path, index=False)
 
-def format_signal_line(base, symbol, confidence_pct, roc_5, roc_15, news_str, breakout_level, price, duration, sl, tp):
-    return (
+def format_signal_line(base, symbol, confidence_pct, roc_5, roc_15, news_str, breakout_level, price, duration, sl, tp, sl_atr=None, tp_atr=None, duration_atr=None):
+    msg = (
         f"🚀 *{base.upper()}* ({symbol.replace('-', '/')})\n"
         f"  Confidence: {confidence_pct}% | ROC5: {roc_5:.2f}% | ROC15: {roc_15:.2f}% | News: {news_str}\n"
-        f"  Breakout > ${breakout_level:.4f} | Price: ${price:.4f} | Duration: {duration}min\n"
+        f"  Breakout > ${breakout_level:.4f} | Price: ${price:.4f} | ML-Duration: {duration}min\n"
         f"  SL: ${sl:.4f} | TP: ${tp:.4f}\n"
     )
+    # --- ATR-based TP/SL/duration info ---
+    if sl_atr is not None and tp_atr is not None:
+        msg += f"  ATR-Stop: ${sl_atr:.4f} | ATR-Target: ${tp_atr:.4f}\n"
+    if duration_atr is not None:
+        if duration_atr > 0:
+            msg += f"  ATR-ML duration: {duration_atr} bars (to TP)\n"
+        elif duration_atr < 0:
+            msg += f"  ATR-ML duration: {-duration_atr} bars (to SL)\n"
+        else:
+            msg += f"  ATR-ML duration: not hit in 1h\n"
+    msg += f"  Max duration: 1 hour\n"
+    return msg
 
 def main():
     kucoin_symbols = fetch_kucoin_usdt_symbols()
@@ -320,7 +366,7 @@ def main():
             skipped_pairs.append(symbol)
             continue
 
-        df = fetch_kucoin_ohlcv(symbol, interval="30min", limit=200)
+        df = fetch_kucoin_ohlcv(symbol, interval=CANDLE_INTERVAL, limit=200)
         if df is None:
             skipped_pairs.append(symbol)
             continue
@@ -374,17 +420,20 @@ def main():
 
         roc_5 = df['roc_5'].iloc[-1] if 'roc_5' in df.columns else df['close'].pct_change(5).iloc[-1] * 100
         roc_15 = df['roc_15'].iloc[-1] if 'roc_15' in df.columns else df['close'].pct_change(15).iloc[-1] * 100
-        breakout_level = df['close'].iloc[-100:].quantile(0.9)
+        breakout_level = df['close'].iloc[-100:].quantile(0.7)
         price = df['close'].iloc[-1]
         duration = predict_duration(df, model_reg)
         sl = price * 0.985
         tp = price * 1.04
+        sl_atr = df['sl_atr'].iloc[-1]
+        tp_atr = df['tp_atr'].iloc[-1]
+        duration_atr = df['duration_to_tp_sl_atr'].iloc[-1] if 'duration_to_tp_sl_atr' in df.columns else None
         confidence_pct = int(confidence * 100)
         news_str = f"B{total_bullish}/R{total_bearish}"
 
         signals.append(format_signal_line(
             base, symbol, confidence_pct, roc_5, roc_15, news_str,
-            breakout_level, price, duration, sl, tp
+            breakout_level, price, duration, sl, tp, sl_atr, tp_atr, duration_atr
         ))
         signals_sent += 1
         analyzed_pairs.append(symbol)
