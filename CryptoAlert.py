@@ -172,43 +172,43 @@ def top_symbols(n):
 
 def decide_signal_and_confidence(feats, direction, rsi_threshold=45, adx_threshold=20):
     if direction == "BULLISH":
-        ema_chain = feats['ema_30m'] > feats['ema_1h'] > feats['ema_4h']
+        ema_chain = feats['ema_1h'] > feats['ema_4h']
         rsi_fav = feats['rsi_4h'] > rsi_threshold
         adx_ok = feats['adx_4h'] > adx_threshold
         breakout_4h = feats['breakout_4h']
-        macd_30m_pos = feats['macd_hist_30m'] > 0
+        macd_1h_pos = feats['macd_hist_1h'] > 0
         conditions = [ema_chain, rsi_fav, adx_ok, breakout_4h]
-        entry = (sum(conditions) >= 3) and macd_30m_pos
+        entry = (sum(conditions) >= 3) and macd_1h_pos
         ema_conf = 1.0 if ema_chain else 0.0
         adx_conf = min(max((feats['adx_4h'] - adx_threshold) / 40.0, 0), 1)
         rsi_conf = min(max((feats['rsi_4h'] - rsi_threshold) / (100 - rsi_threshold), 0), 1)
-        macd_conf = 1.0 if macd_30m_pos else 0.0
+        macd_conf = 1.0 if macd_1h_pos else 0.0
         confidence = (
-            0.40 * ema_conf +
+            0.45 * ema_conf +
             0.25 * adx_conf +
             0.20 * rsi_conf +
-            0.15 * macd_conf
+            0.10 * macd_conf
         )
-        print(f"[DEBUG] BULLISH: EMA_CHAIN={ema_chain}, RSI_FAV={rsi_fav}, ADX_OK={adx_ok}, BREAKOUT_4H={breakout_4h}, MACD_30m_POS={macd_30m_pos} | entry={entry} conf={confidence:.2f}")
+        print(f"[DEBUG] BULLISH: EMA_CHAIN={ema_chain}, RSI_FAV={rsi_fav}, ADX_OK={adx_ok}, BREAKOUT_4H={breakout_4h}, MACD_1h_POS={macd_1h_pos} | entry={entry} conf={confidence:.2f}")
     else:  # BEARISH
-        ema_chain = feats['ema_30m'] < feats['ema_1h'] < feats['ema_4h']
+        ema_chain = feats['ema_1h'] < feats['ema_4h']
         rsi_fav = feats['rsi_4h'] < rsi_threshold
         adx_ok = feats['adx_4h'] > adx_threshold
         breakout_4h = feats['breakout_4h']
-        macd_30m_neg = feats['macd_hist_30m'] < 0
+        macd_1h_neg = feats['macd_hist_1h'] < 0
         conditions = [ema_chain, rsi_fav, adx_ok, breakout_4h]
-        entry = (sum(conditions) >= 3) and macd_30m_neg
+        entry = (sum(conditions) >= 3) and macd_1h_neg
         ema_conf = 1.0 if ema_chain else 0.0
         adx_conf = min(max((feats['adx_4h'] - adx_threshold) / 40.0, 0), 1)
         rsi_conf = min(max((rsi_threshold - feats['rsi_4h']) / rsi_threshold, 0), 1)
-        macd_conf = 1.0 if macd_30m_neg else 0.0
+        macd_conf = 1.0 if macd_1h_neg else 0.0
         confidence = (
-            0.40 * ema_conf +
+            0.45 * ema_conf +
             0.25 * adx_conf +
             0.20 * rsi_conf +
-            0.15 * macd_conf
+            0.10 * macd_conf
         )
-        print(f"[DEBUG] BEARISH: EMA_CHAIN={ema_chain}, RSI_FAV={rsi_fav}, ADX_OK={adx_ok}, BREAKOUT_4H={breakout_4h}, MACD_30m_NEG={macd_30m_neg} | entry={entry} conf={confidence:.2f}")
+        print(f"[DEBUG] BEARISH: EMA_CHAIN={ema_chain}, RSI_FAV={rsi_fav}, ADX_OK={adx_ok}, BREAKOUT_4H={breakout_4h}, MACD_1h_NEG={macd_1h_neg} | entry={entry} conf={confidence:.2f}")
     return entry, min(confidence, 1.0)
 
 def estimate_trade_duration(price, atr):
@@ -290,21 +290,18 @@ def main():
             print(f"[DEBUG] Processing {s}")
             df4 = fetch_klines(s, '4h', 100)
             df1 = fetch_klines(s, '1h', 100)
-            df30 = fetch_klines(s, '30m', 100)
-            if df4.empty or df1.empty or df30.empty:
+            if df4.empty or df1.empty:
                 print(f"[DEBUG] Empty df for {s}")
                 continue
             feats = {}
             feats.update(compute_tf_features(df4, '4h'))
             feats.update(compute_tf_features(df1, '1h'))
-            feats.update(compute_tf_features(df30, '30m'))
             feats['ema_4h'] = feats['ema_4h']
             feats['ema_1h'] = feats['ema_1h']
-            feats['ema_30m'] = feats['ema_30m']
 
             main_features = [
-                'rsi_4h', 'ema_4h', 'ema_1h', 'ema_30m', 'adx_4h', 'atr_4h',
-                'macd_hist_30m', 'macd_hist_1h', 'macd_hist_4h'
+                'rsi_4h', 'ema_4h', 'ema_1h', 'adx_4h', 'atr_4h',
+                'macd_hist_1h', 'macd_hist_4h'
             ]
             if any(np.isnan(feats.get(x, np.nan)) for x in main_features):
                 print(f"[DEBUG] NaN feature for {s}")
