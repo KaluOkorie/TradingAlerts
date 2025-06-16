@@ -7,12 +7,10 @@ import numpy as np
 import pandas_ta as ta
 from transformers import pipeline
 
-# === CONFIGURATION ===
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 BINANCE_API = "https://api.binance.us/api/v3"
 TOP_N_SYMBOLS = 50
-
 API_KEY = os.getenv("CRYPTOCOMPARE_API_KEY", "")
 
 COIN_ALIASES = {
@@ -99,16 +97,42 @@ def compute_tf_features(df, tf_label):
             feat[k] = feat[k].iloc[-1]
     return feat
 
+def fetch_klines(symbol, interval, limit):
+    url = f"{BINANCE_API}/klines"
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        if resp.status_code != 200:
+            print(f"[DEBUG] fetch_klines: HTTP {resp.status_code} for {symbol} {interval}")
+            return pd.DataFrame()
+        data = resp.json()
+        if not isinstance(data, list) or not data:
+            print(f"[DEBUG] fetch_klines: No data for {symbol} {interval}")
+            return pd.DataFrame()
+        df = pd.DataFrame(data, columns=[
+            "open_time", "open", "high", "low", "close", "volume",
+            "close_time", "quote_asset_volume", "number_of_trades",
+            "taker_buy_base", "taker_buy_quote", "ignore"
+        ])
+        for col in ["open", "high", "low", "close", "volume"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        return df
+    except Exception as e:
+        print(f"[DEBUG] fetch_klines Exception for {symbol} {interval}: {e}")
+        return pd.DataFrame()
+
 def fetch_cryptocompare_news(symbol):
     url = f"https://min-api.cryptocompare.com/data/v2/news/?lang=EN&api_key={API_KEY}"
     try:
         resp = requests.get(url, timeout=10)
         if resp.status_code != 200:
+            print(f"[DEBUG] News fetch HTTP error {resp.status_code} for {symbol}")
             return []
         try:
             data = resp.json()
             news_data = data.get("Data", [])
-        except Exception:
+        except Exception as jserr:
+            print(f"[DEBUG] News fetch JSON error for {symbol}: {jserr}")
             return []
         aliases = COIN_ALIASES.get(symbol, [symbol])
         bull, bear = [], []
@@ -128,16 +152,23 @@ def fetch_cryptocompare_news(symbol):
                 if len(bull) == 2 and len(bear) == 2:
                     break
         headlines = bull + bear
+        print(f"[DEBUG] News for {symbol}: {headlines}")
         return headlines
-    except Exception:
+    except Exception as e:
+        print(f"[DEBUG] News fetch error for {symbol}: {e}")
         return []
 
 def top_symbols(n):
-    df = pd.DataFrame(requests.get(f"{BINANCE_API}/ticker/24hr").json())
-    df['quoteVolume'] = pd.to_numeric(df['quoteVolume'], errors='coerce')
-    usdt = df[df['symbol'].str.endswith('USDT')]
-    top = usdt.nlargest(n, 'quoteVolume')['symbol'].tolist()
-    return top
+    try:
+        df = pd.DataFrame(requests.get(f"{BINANCE_API}/ticker/24hr").json())
+        df['quoteVolume'] = pd.to_numeric(df['quoteVolume'], errors='coerce')
+        usdt = df[df['symbol'].str.endswith('USDT')]
+        top = usdt.nlargest(n, 'quoteVolume')['symbol'].tolist()
+        print(f"[DEBUG] Top symbols: {top[:10]} ...")
+        return top
+    except Exception as e:
+        print(f"[DEBUG] Error fetching top symbols: {e}")
+        return []
 
 def decide_signal_and_confidence(feats, direction, rsi_threshold=45, adx_threshold=20):
     if direction == "BULLISH":
@@ -146,7 +177,6 @@ def decide_signal_and_confidence(feats, direction, rsi_threshold=45, adx_thresho
         adx_ok = feats['adx_4h'] > adx_threshold
         breakout_4h = feats['breakout_4h']
         macd_15m_pos = feats['macd_hist_15m'] > 0
-        # At least 3 of 4 must be True, and MACD (15m) must be positive
         conditions = [ema_chain, rsi_fav, adx_ok, breakout_4h]
         entry = (sum(conditions) >= 3) and macd_15m_pos
         ema_conf = 1.0 if ema_chain else 0.0
@@ -159,13 +189,13 @@ def decide_signal_and_confidence(feats, direction, rsi_threshold=45, adx_thresho
             0.20 * rsi_conf +
             0.15 * macd_conf
         )
+        print(f"[DEBUG] BULLISH: EMA_CHAIN={ema_chain}, RSI_FAV={rsi_fav}, ADX_OK={adx_ok}, BREAKOUT_4H={breakout_4h}, MACD_15m_POS={macd_15m_pos} | entry={entry} conf={confidence:.2f}")
     else:  # BEARISH
         ema_chain = feats['ema_15m'] < feats['ema_1h'] < feats['ema_4h']
         rsi_fav = feats['rsi_4h'] < rsi_threshold
         adx_ok = feats['adx_4h'] > adx_threshold
         breakout_4h = feats['breakout_4h']
         macd_15m_neg = feats['macd_hist_15m'] < 0
-        # At least 3 of 4 must be True, and MACD (15m) must be negative
         conditions = [ema_chain, rsi_fav, adx_ok, breakout_4h]
         entry = (sum(conditions) >= 3) and macd_15m_neg
         ema_conf = 1.0 if ema_chain else 0.0
@@ -178,6 +208,7 @@ def decide_signal_and_confidence(feats, direction, rsi_threshold=45, adx_thresho
             0.20 * rsi_conf +
             0.15 * macd_conf
         )
+        print(f"[DEBUG] BEARISH: EMA_CHAIN={ema_chain}, RSI_FAV={rsi_fav}, ADX_OK={adx_ok}, BREAKOUT_4H={breakout_4h}, MACD_15m_NEG={macd_15m_neg} | entry={entry} conf={confidence:.2f}")
     return entry, min(confidence, 1.0)
 
 def estimate_trade_duration(price, atr):
@@ -229,10 +260,24 @@ def format_signal(sym, details, news_headlines):
         f"{news_str}"
     )
 
+def send_tel(msg):
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        try:
+            r = requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                data={'chat_id': TELEGRAM_CHAT_ID, 'text': msg, 'parse_mode': 'Markdown'}
+            )
+            print(f"[DEBUG] Telegram send status code: {r.status_code}")
+            if r.status_code != 200:
+                print(f"[DEBUG] Telegram error: {r.text}")
+        except Exception as e:
+            print(f"[DEBUG] Telegram send exception: {e}")
+
 def main():
     now_utc = datetime.utcnow()
     now_bst = now_utc + timedelta(hours=1)
     date_str = now_bst.strftime("%A, %d %B %Y %H:%M BST")
+    print(f"[DEBUG] Current time: {date_str}")
 
     syms = top_symbols(TOP_N_SYMBOLS)
     bullish_signals = []
@@ -242,10 +287,12 @@ def main():
 
     for s in syms:
         try:
+            print(f"[DEBUG] Processing {s}")
             df4 = fetch_klines(s, '4h', 100)
             df1 = fetch_klines(s, '1h', 100)
             df15 = fetch_klines(s, '15m', 100)
             if df4.empty or df1.empty or df15.empty:
+                print(f"[DEBUG] Empty df for {s}")
                 continue
             feats = {}
             feats.update(compute_tf_features(df4, '4h'))
@@ -260,6 +307,7 @@ def main():
                 'macd_hist_15m', 'macd_hist_1h', 'macd_hist_4h'
             ]
             if any(np.isnan(feats.get(x, np.nan)) for x in main_features):
+                print(f"[DEBUG] NaN feature for {s}")
                 continue
 
             price = df4['close'].iloc[-1]
@@ -300,7 +348,8 @@ def main():
 
             news_headlines = fetch_cryptocompare_news(s)
             asset_sentiment[s] = news_headlines
-        except Exception:
+        except Exception as e:
+            print(f"[DEBUG] Error processing {s}: {e}")
             continue
 
     header = f"*🚀 DAily CRYPTO TRADE SIGNAL  — {date_str}*"
@@ -313,18 +362,17 @@ def main():
         for sym in bearish_signals[:3]:
             msg += format_signal(sym, trade_details[sym], asset_sentiment.get(sym, [])) + "\n"
     if not bullish_signals and not bearish_signals:
-        msg += "No actionable signals found today.\n"
+        msg += "*No singal found *\n"
 
-    # Print summary of all signals (bullish and bearish)
-    print(header)
+    print("[DEBUG] ------------------ FINAL SIGNAL SUMMARY ------------------")
     for sym in bullish_signals:
         print(f"BULLISH: {sym} | Conf: {trade_details[sym]['confidence']:.2f} | Price: {trade_details[sym]['price']:.4f}")
     for sym in bearish_signals:
         print(f"BEARISH: {sym} | Conf: {trade_details[sym]['confidence']:.2f} | Price: {trade_details[sym]['price']:.4f}")
     if not bullish_signals and not bearish_signals:
-        print("No actionable signals found today.")
+        print("*No singal found *")
 
-    # msg variable contains the summary for downstream use
+    send_tel(msg)
 
 if __name__ == '__main__':
     main()
