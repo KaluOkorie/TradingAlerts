@@ -312,7 +312,7 @@ def main():
             breakout_level = get_breakout_level(df4)
 
             is_bull, conf_bull = decide_signal_and_confidence(feats, "BULLISH")
-            if is_bull:
+            if is_bull and conf_bull >= 0.6:
                 tp = price + 2 * atr
                 sl = price - 1.4 * atr
                 duration = estimate_trade_duration(price, atr)
@@ -328,7 +328,7 @@ def main():
                 }
 
             is_bear, conf_bear = decide_signal_and_confidence(feats, "BEARISH")
-            if is_bear:
+            if is_bear and conf_bear >= 0.6:
                 tp = price - 2 * atr
                 sl = price + 1.4 * atr
                 duration = estimate_trade_duration(price, atr)
