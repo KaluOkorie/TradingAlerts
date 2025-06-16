@@ -144,19 +144,15 @@ def decide_signal_and_confidence(feats, direction, rsi_threshold=45, adx_thresho
         ema_chain = feats['ema_15m'] > feats['ema_1h'] > feats['ema_4h']
         rsi_fav = feats['rsi_4h'] > rsi_threshold
         adx_ok = feats['adx_4h'] > adx_threshold
-        macd_bull = (
-            feats['macd_hist_15m'] > 0 and
-            feats['macd_hist_1h'] > 0 and
-            feats['macd_hist_4h'] > 0
-        )
-        entry = ema_chain and adx_ok and rsi_fav and macd_bull
+        breakout_4h = feats['breakout_4h']
+        macd_15m_pos = feats['macd_hist_15m'] > 0
+        # At least 3 of 4 must be True, and MACD (15m) must be positive
+        conditions = [ema_chain, rsi_fav, adx_ok, breakout_4h]
+        entry = (sum(conditions) >= 3) and macd_15m_pos
         ema_conf = 1.0 if ema_chain else 0.0
         adx_conf = min(max((feats['adx_4h'] - adx_threshold) / 40.0, 0), 1)
         rsi_conf = min(max((feats['rsi_4h'] - rsi_threshold) / (100 - rsi_threshold), 0), 1)
-        macd_15m_conf = 1.0 if feats['macd_hist_15m'] > 0 else 0.0
-        macd_1h_conf = 1.0 if feats['macd_hist_1h'] > 0 else 0.0
-        macd_4h_conf = 1.0 if feats['macd_hist_4h'] > 0 else 0.0
-        macd_conf = (macd_15m_conf * 0.5 + macd_1h_conf * 0.3 + macd_4h_conf * 0.2)
+        macd_conf = 1.0 if macd_15m_pos else 0.0
         confidence = (
             0.40 * ema_conf +
             0.25 * adx_conf +
@@ -167,19 +163,15 @@ def decide_signal_and_confidence(feats, direction, rsi_threshold=45, adx_thresho
         ema_chain = feats['ema_15m'] < feats['ema_1h'] < feats['ema_4h']
         rsi_fav = feats['rsi_4h'] < rsi_threshold
         adx_ok = feats['adx_4h'] > adx_threshold
-        macd_bear = (
-            feats['macd_hist_15m'] < 0 and
-            feats['macd_hist_1h'] < 0 and
-            feats['macd_hist_4h'] < 0
-        )
-        entry = ema_chain and adx_ok and rsi_fav and macd_bear
+        breakout_4h = feats['breakout_4h']
+        macd_15m_neg = feats['macd_hist_15m'] < 0
+        # At least 3 of 4 must be True, and MACD (15m) must be negative
+        conditions = [ema_chain, rsi_fav, adx_ok, breakout_4h]
+        entry = (sum(conditions) >= 3) and macd_15m_neg
         ema_conf = 1.0 if ema_chain else 0.0
         adx_conf = min(max((feats['adx_4h'] - adx_threshold) / 40.0, 0), 1)
         rsi_conf = min(max((rsi_threshold - feats['rsi_4h']) / rsi_threshold, 0), 1)
-        macd_15m_conf = 1.0 if feats['macd_hist_15m'] < 0 else 0.0
-        macd_1h_conf = 1.0 if feats['macd_hist_1h'] < 0 else 0.0
-        macd_4h_conf = 1.0 if feats['macd_hist_4h'] < 0 else 0.0
-        macd_conf = (macd_15m_conf * 0.5 + macd_1h_conf * 0.3 + macd_4h_conf * 0.2)
+        macd_conf = 1.0 if macd_15m_neg else 0.0
         confidence = (
             0.40 * ema_conf +
             0.25 * adx_conf +
@@ -323,7 +315,16 @@ def main():
     if not bullish_signals and not bearish_signals:
         msg += "No actionable signals found today.\n"
 
-    # Ready for deployment: msg variable contains the summary for downstream use
+    # Print summary of all signals (bullish and bearish)
+    print(header)
+    for sym in bullish_signals:
+        print(f"BULLISH: {sym} | Conf: {trade_details[sym]['confidence']:.2f} | Price: {trade_details[sym]['price']:.4f}")
+    for sym in bearish_signals:
+        print(f"BEARISH: {sym} | Conf: {trade_details[sym]['confidence']:.2f} | Price: {trade_details[sym]['price']:.4f}")
+    if not bullish_signals and not bearish_signals:
+        print("No actionable signals found today.")
+
+    # msg variable contains the summary for downstream use
 
 if __name__ == '__main__':
     main()
