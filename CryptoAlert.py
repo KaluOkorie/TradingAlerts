@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 import pandas_ta as ta
 from transformers import pipeline
+import re
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -135,13 +136,12 @@ def fetch_cryptocompare_news(symbol):
             print(f"[DEBUG] News fetch JSON error for {symbol}: {jserr}")
             return []
         aliases = COIN_ALIASES.get(symbol, [symbol])
+        alias_pattern = r'\b(' + '|'.join(re.escape(alias) for alias in aliases) + r')\b'
         bull, bear = [], []
         for post in news_data:
             title = post.get("title", "")
-            body = post.get("body", "")
-            tags = post.get("tags", "")
-            content = f"{tags} {title} {body}".lower()
-            if any(alias.lower() in content for alias in aliases):
+            # STRICT: Only check the title for alias as a whole word
+            if re.search(alias_pattern, title, flags=re.IGNORECASE):
                 text = title[:512]
                 if text:
                     r = sentiment_pipe(text)[0]
@@ -152,7 +152,7 @@ def fetch_cryptocompare_news(symbol):
                 if len(bull) == 2 and len(bear) == 2:
                     break
         headlines = bull + bear
-        print(f"[DEBUG] News for {symbol}: {headlines}")
+        print(f"[DEBUG] STRICT News for {symbol}: {headlines}")
         return headlines
     except Exception as e:
         print(f"[DEBUG] News fetch error for {symbol}: {e}")
