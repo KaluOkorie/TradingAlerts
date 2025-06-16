@@ -1,408 +1,329 @@
-# Strong spike detction 
-
 import os
+import time
+from datetime import datetime, timedelta
 import requests
 import pandas as pd
-from datetime import datetime
-import pytz
-from ta.trend import ADXIndicator
-from ta.volatility import AverageTrueRange
-import xgboost as xgb
-from sklearn.model_selection import train_test_split
 import numpy as np
+import pandas_ta as ta
+from transformers import pipeline
 
-# --- CONFIG ---
-KUCOIN_API_URL = "https://api.kucoin.com"
-TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', 'YOUR_TELEGRAM_TOKEN')
-TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', 'YOUR_CHAT_ID')
-COINMARKETCAP_API_KEY = os.environ.get("COINMARKETCAP_API_KEY", 'YOUR_COINMARKETCAP_KEY')
-COINMARKETCAP_API_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
-CRYPTOCOMPARE_API_KEY = os.environ.get("CRYPTOCOMPARE_API_KEY", 'YOUR_CRYPTOCOMPARE_KEY')
-CRYPTOCOMPARE_NEWS_URL = "https://min-api.cryptocompare.com/data/v2/news/?lang=EN"
+# === CONFIGURATION ===
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+BINANCE_API = "https://api.binance.us/api/v3"
+TOP_N_SYMBOLS = 50
 
-DATA_DIR = "data"
-MODEL_DIR = "models"
-os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(MODEL_DIR, exist_ok=True)
+API_KEY = os.getenv("CRYPTOCOMPARE_API_KEY", "")
 
-CANDLE_INTERVAL = "30min"
-CANDLE_MIN = 30
-MAX_CANDLES = int(60 / (CANDLE_MIN / 60))  # 1 hour for 30min candles = 2
-CONFIDENCE_THRESHOLD = 0.85
+COIN_ALIASES = {
+    "BTCUSDT": ["BTCUSDT", "BTC", "Bitcoin"],
+    "ETHUSDT": ["ETHUSDT", "ETH", "Ethereum"],
+    "XRPUSDT": ["XRPUSDT", "XRP", "Ripple"],
+    "SOLUSDT": ["SOLUSDT", "SOL", "Solana"],
+    "DOTUSDT": ["DOTUSDT", "DOT", "Polkadot"],
+    "FLOKIUSDT": ["FLOKIUSDT", "FLOKI", "Floki Inu"],
+    "SUIUSDT": ["SUIUSDT", "SUI", "Sui"],
+    "DOGEUSDT": ["DOGEUSDT", "DOGE", "Dogecoin"],
+    "PEPEUSDT": ["PEPEUSDT", "PEPE", "Pepe"],
+    "USDCUSDT": ["USDCUSDT", "USDC", "USD Coin"],
+    "FETUSDT": ["FETUSDT", "FET", "Fetch.ai"],
+    "ADAUSDT": ["ADAUSDT", "ADA", "Cardano"],
+    "BCHUSDT": ["BCHUSDT", "BCH", "Bitcoin Cash"],
+    "GALAUSDT": ["GALAUSDT", "GALA", "Gala"],
+    "BNBUSDT": ["BNBUSDT", "BNB", "Binance Coin"],
+    "HYPEUSDT": ["HYPEUSDT", "HYPE", "Hype"],
+    "SHIBUSDT": ["SHIBUSDT", "SHIB", "Shiba Inu"],
+    "LTCUSDT": ["LTCUSDT", "LTC", "Litecoin"],
+    "IOSTUSDT": ["IOSTUSDT", "IOST", "IOST"],
+    "AVAXUSDT": ["AVAXUSDT", "AVAX", "Avalanche"],
+    "ONEUSDT": ["ONEUSDT", "ONE", "Harmony"],
+    "TRUMPUSDT": ["TRUMPUSDT", "TRUMP", "Trump Coin"],
+    "SUSHIUSDT": ["SUSHIUSDT", "SUSHI", "SushiSwap"],
+    "NEARUSDT": ["NEARUSDT", "NEAR", "NEAR Protocol"],
+    "MKRUSDT": ["MKRUSDT", "MKR", "Maker"],
+    "LINKUSDT": ["LINKUSDT", "LINK", "Chainlink"],
+    "API3USDT": ["API3USDT", "API3", "API3"],
+    "VETUSDT": ["VETUSDT", "VET", "VeChain"],
+    "PNUTUSDT": ["PNUTUSDT", "PNUT", "Peanut"],
+    "RVNUSDT": ["RVNUSDT", "RVN", "Ravencoin"],
+    "HBARUSDT": ["HBARUSDT", "HBAR", "Hedera"],
+    "AAVEUSDT": ["AAVEUSDT", "AAVE", "Aave"],
+    "BANDUSDT": ["BANDUSDT", "BAND", "Band Protocol"],
+    "XLMUSDT": ["XLMUSDT", "XLM", "Stellar"],
+    "ATOMUSDT": ["ATOMUSDT", "ATOM", "Cosmos"],
+    "VTHOUSDT": ["VTHOUSDT", "VTHO", "VeThor Token"],
+    "POLUSDT": ["POLUSDT", "POL", "Polygon Ecosystem Token"],
+    "PENGUUSDT": ["PENGUUSDT", "PENGU", "Penguin"],
+    "BONKUSDT": ["BONKUSDT", "BONK", "Bonk"],
+    "THETAUSDT": ["THETAUSDT", "THETA", "Theta"],
+    "AIXBTUSDT": ["AIXBTUSDT", "AIXBT", "AI XBT"],
+    "WIFUSDT": ["WIFUSDT", "WIF", "dogwifhat"],
+    "YFIUSDT": ["YFIUSDT", "YFI", "Yearn.Finance"],
+    "ACHUSDT": ["ACHUSDT", "ACH", "Alchemy Pay"],
+    "UNIUSDT": ["UNIUSDT", "UNI", "Uniswap"],
+    "ZILUSDT": ["ZILUSDT", "ZIL", "Zilliqa"],
+    "IOTAUSDT": ["IOTAUSDT", "IOTA", "IOTA"],
+    "RENUSDT": ["RENUSDT", "REN", "Ren"],
+    "ENAUSDT": ["ENAUSDT", "ENA", "Ethena"],
+    "RENDERUSDT": ["RENDERUSDT", "RNDR", "Render"],
+}
 
-def get_uk_time_header():
-    now_utc = datetime.utcnow().replace(tzinfo=pytz.utc)
-    uk_time = now_utc.astimezone(pytz.timezone("Europe/London"))
-    return f"*🚀 CRYPTO TRADE SIGNAL  — {uk_time.strftime('%A, %d %B %Y %H:%M %Z')}*"
+sentiment_pipe = pipeline(
+    "sentiment-analysis",
+    model="distilbert-base-uncased-finetuned-sst-2-english"
+)
 
-def send_telegram_message(message):
-    print(f"\nTELEGRAM would send:\n{message}\n")  # Debug print (no real send for Colab)
+def compute_macd(series, fast=12, slow=26, signal=9):
+    ema_fast = series.ewm(span=fast, adjust=False).mean()
+    ema_slow = series.ewm(span=slow, adjust=False).mean()
+    macd = ema_fast - ema_slow
+    signal_line = macd.ewm(span=signal, adjust=False).mean()
+    histogram = macd - signal_line
+    return macd.iloc[-1], signal_line.iloc[-1], histogram.iloc[-1]
 
-def fetch_kucoin_usdt_symbols():
-    print("Fetching KuCoin USDT symbols...")
+def compute_tf_features(df, tf_label):
+    feat = {}
+    feat[f'ema_{tf_label}'] = ta.ema(df['close'], length=1).shift(1)
+    feat[f'rsi_{tf_label}'] = ta.rsi(df['close'], length=14).shift(1)
+    feat[f'atr_{tf_label}'] = ta.atr(df['high'], df['low'], df['close'], length=14).shift(1)
+    adx = ta.adx(df['high'], df['low'], df['close'], length=14)
+    feat[f'adx_{tf_label}'] = adx['ADX_14'].shift(1)
+    prior_high = df['high'].shift(1).rolling(20).max()
+    feat[f'breakout_{tf_label}'] = (df['close'] > prior_high).astype(int)
+    macd, macd_signal, macd_hist = compute_macd(df['volume'])
+    feat[f'macd_{tf_label}'] = macd
+    feat[f'macd_signal_{tf_label}'] = macd_signal
+    feat[f'macd_hist_{tf_label}'] = macd_hist
+    for k in feat:
+        if hasattr(feat[k], "iloc"):
+            feat[k] = feat[k].iloc[-1]
+    return feat
+
+def fetch_cryptocompare_news(symbol):
+    url = f"https://min-api.cryptocompare.com/data/v2/news/?lang=EN&api_key={API_KEY}"
     try:
-        resp = requests.get(f"{KUCOIN_API_URL}/api/v2/symbols", timeout=15)
-        resp.raise_for_status()
-        symbols = resp.json()['data']
-        symbols_filtered = [
-            {"symbol": s['symbol'], "base": s['baseCurrency'], "quote": s['quoteCurrency']}
-            for s in symbols if s['symbol'].endswith('-USDT') and s['enableTrading']
-        ]
-        print(f"Fetched {len(symbols_filtered)} KuCoin USDT symbols.")
-        return symbols_filtered
-    except Exception as e:
-        print("Failed fetching KuCoin symbols:", e)
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200:
+            return []
+        try:
+            data = resp.json()
+            news_data = data.get("Data", [])
+        except Exception:
+            return []
+        aliases = COIN_ALIASES.get(symbol, [symbol])
+        bull, bear = [], []
+        for post in news_data:
+            title = post.get("title", "")
+            body = post.get("body", "")
+            tags = post.get("tags", "")
+            content = f"{tags} {title} {body}".lower()
+            if any(alias.lower() in content for alias in aliases):
+                text = title[:512]
+                if text:
+                    r = sentiment_pipe(text)[0]
+                    if r['label'] == 'POSITIVE' and len(bull) < 2:
+                        bull.append({'sentiment': 1, 'headline': title})
+                    elif r['label'] == 'NEGATIVE' and len(bear) < 2:
+                        bear.append({'sentiment': -1, 'headline': title})
+                if len(bull) == 2 and len(bear) == 2:
+                    break
+        headlines = bull + bear
+        return headlines
+    except Exception:
         return []
 
-def fetch_kucoin_ohlcv(symbol, interval="30min", limit=200):
-    print(f"Fetching OHLCV for {symbol} interval={interval} limit={limit}...")
-    limit = max(30, min(limit, 200))
-    url = f"{KUCOIN_API_URL}/api/v1/market/candles"
-    params = {"symbol": symbol, "type": interval, "limit": limit}
-    try:
-        resp = requests.get(url, params=params, timeout=15)
-        resp.raise_for_status()
-        data = resp.json().get('data', [])
-        if not data or len(data) < 2:
-            print(f"Not enough data for {symbol}")
-            return None
-        df = pd.DataFrame(data, columns=["time", "open", "close", "high", "low", "volume", "turnover"])
-        df = df.iloc[::-1].reset_index(drop=True)  # oldest first
-        df['time'] = pd.to_numeric(df['time'])
-        df['timestamp'] = pd.to_datetime(df['time'], unit='s')
-        for col in ['open','close','high','low','volume','turnover']:
-            df[col] = pd.to_numeric(df[col])
-        df['timestamp'] = df['timestamp'].dt.tz_localize(None)
-        print(f"Downloaded OHLCV for {symbol}, shape: {df.shape}")
-        return df.reset_index(drop=True)
-    except Exception as e:
-        print(f"Error fetching OHLCV for {symbol}:", e)
-        return None
+def top_symbols(n):
+    df = pd.DataFrame(requests.get(f"{BINANCE_API}/ticker/24hr").json())
+    df['quoteVolume'] = pd.to_numeric(df['quoteVolume'], errors='coerce')
+    usdt = df[df['symbol'].str.endswith('USDT')]
+    top = usdt.nlargest(n, 'quoteVolume')['symbol'].tolist()
+    return top
 
-def fetch_news_sentiment():
-    print("Fetching CryptoCompare news sentiment...")
-    headers = {'Authorization': f'Apikey {CRYPTOCOMPARE_API_KEY}'}
-    coin_news_counts = {}
-    try:
-        resp = requests.get(CRYPTOCOMPARE_NEWS_URL, headers=headers, timeout=10)
-        resp.raise_for_status()
-        news_data = resp.json().get('Data', [])
-        for article in news_data:
-            try:
-                tags = article.get('tags', [])
-                title = article.get('title', '').lower()
-                is_bullish = any(word in title for word in [
-                    'rise', 'bull', 'breakout', 'gain', 'pump', 'spike', 'surge', 'rally'
-                ])
-                is_bearish = any(word in title for word in [
-                    'fall', 'bear', 'drop', 'crash', 'dump', 'slump', 'plunge', 'collapse'
-                ])
-                for tag in tags:
-                    if tag.endswith('USDT'):
-                        key = tag.upper().replace("-", "")
-                        if key not in coin_news_counts:
-                            coin_news_counts[key] = {"bullish": 0, "bearish": 0}
-                        if is_bullish:
-                            coin_news_counts[key]["bullish"] += 1
-                        if is_bearish:
-                            coin_news_counts[key]["bearish"] += 1
-            except Exception:
-                pass
-    except Exception as e:
-        print("News fetch failed:", e)
-    print(f"CryptoCompare news sentiment loaded for {len(coin_news_counts)} coins.")
-    return coin_news_counts
+def decide_signal_and_confidence(feats, direction, rsi_threshold=45, adx_threshold=20):
+    if direction == "BULLISH":
+        ema_chain = feats['ema_15m'] > feats['ema_1h'] > feats['ema_4h']
+        rsi_fav = feats['rsi_4h'] > rsi_threshold
+        adx_ok = feats['adx_4h'] > adx_threshold
+        macd_bull = (
+            feats['macd_hist_15m'] > 0 and
+            feats['macd_hist_1h'] > 0 and
+            feats['macd_hist_4h'] > 0
+        )
+        entry = ema_chain and adx_ok and rsi_fav and macd_bull
+        ema_conf = 1.0 if ema_chain else 0.0
+        adx_conf = min(max((feats['adx_4h'] - adx_threshold) / 40.0, 0), 1)
+        rsi_conf = min(max((feats['rsi_4h'] - rsi_threshold) / (100 - rsi_threshold), 0), 1)
+        macd_15m_conf = 1.0 if feats['macd_hist_15m'] > 0 else 0.0
+        macd_1h_conf = 1.0 if feats['macd_hist_1h'] > 0 else 0.0
+        macd_4h_conf = 1.0 if feats['macd_hist_4h'] > 0 else 0.0
+        macd_conf = (macd_15m_conf * 0.5 + macd_1h_conf * 0.3 + macd_4h_conf * 0.2)
+        confidence = (
+            0.40 * ema_conf +
+            0.25 * adx_conf +
+            0.20 * rsi_conf +
+            0.15 * macd_conf
+        )
+    else:  # BEARISH
+        ema_chain = feats['ema_15m'] < feats['ema_1h'] < feats['ema_4h']
+        rsi_fav = feats['rsi_4h'] < rsi_threshold
+        adx_ok = feats['adx_4h'] > adx_threshold
+        macd_bear = (
+            feats['macd_hist_15m'] < 0 and
+            feats['macd_hist_1h'] < 0 and
+            feats['macd_hist_4h'] < 0
+        )
+        entry = ema_chain and adx_ok and rsi_fav and macd_bear
+        ema_conf = 1.0 if ema_chain else 0.0
+        adx_conf = min(max((feats['adx_4h'] - adx_threshold) / 40.0, 0), 1)
+        rsi_conf = min(max((rsi_threshold - feats['rsi_4h']) / rsi_threshold, 0), 1)
+        macd_15m_conf = 1.0 if feats['macd_hist_15m'] < 0 else 0.0
+        macd_1h_conf = 1.0 if feats['macd_hist_1h'] < 0 else 0.0
+        macd_4h_conf = 1.0 if feats['macd_hist_4h'] < 0 else 0.0
+        macd_conf = (macd_15m_conf * 0.5 + macd_1h_conf * 0.3 + macd_4h_conf * 0.2)
+        confidence = (
+            0.40 * ema_conf +
+            0.25 * adx_conf +
+            0.20 * rsi_conf +
+            0.15 * macd_conf
+        )
+    return entry, min(confidence, 1.0)
 
-def compute_duration_to_tp_sl_atr(df, tp_mult=2, sl_mult=1, max_candles=MAX_CANDLES):
-    durations = []
-    for idx in range(len(df)):
-        entry = df['close'].iloc[idx]
-        atr = df['atr'].iloc[idx]
-        tp = entry + tp_mult * atr
-        sl = entry - sl_mult * atr
-        duration = 0
-        for forward in range(1, max_candles + 1):
-            if idx + forward >= len(df):
-                break
-            high = df['high'].iloc[idx + forward]
-            low = df['low'].iloc[idx + forward]
-            if high >= tp:
-                duration = forward
-                break
-            if low <= sl:
-                duration = -forward
-                break
-        durations.append(duration)
-    df['duration_to_tp_sl_atr'] = durations
-    return df
+def estimate_trade_duration(price, atr):
+    atr_ratio = atr / price
+    if atr_ratio > 0.03:
+        return round(10, 1)
+    elif atr_ratio > 0.01:
+        return round(40, 1)
+    else:
+        return round(120, 1)
 
-def create_features_and_label(df):
-    print("Feature engineering...")
-    df['roc_5'] = df['close'].pct_change(5) * 100
-    df['roc_15'] = df['close'].pct_change(15) * 100
-    adx_indicator = ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14)
-    df['adx'] = adx_indicator.adx()
-    df['adx_pos'] = adx_indicator.adx_pos()
-    df['adx_neg'] = adx_indicator.adx_neg()
-    df['hour'] = df['timestamp'].dt.hour
-    df['day'] = df['timestamp'].dt.dayofweek
+def get_breakout_level(df4):
+    return df4['high'].shift(1).rolling(20).max().iloc[-1]
 
-    atr_indicator = AverageTrueRange(high=df['high'], low=df['low'], close=df['close'], window=14)
-    df['atr'] = atr_indicator.average_true_range()
+def get_asset_pair(symbol):
+    if symbol.endswith("USDT"):
+        base = symbol[:-4]
+        quote = "USDT"
+        return f"{base}/{quote}", base
+    elif symbol.endswith("USD"):
+        base = symbol[:-3]
+        quote = "USD"
+        return f"{base}/{quote}", base
+    else:
+        base = symbol[:-3]
+        quote = symbol[-3:]
+        return f"{base}/{quote}", base
 
-    df['tp_atr'] = df['close'] + 2 * df['atr']
-    df['sl_atr'] = df['close'] - 1 * df['atr']
-
-    df['max_future_2'] = np.maximum(df['close'].shift(-1), df['close'].shift(-2))
-    df['target'] = ((df['max_future_2'] - df['close']) > (0.75 * df['atr'])).astype(int)
-    df = compute_duration_to_tp_sl_atr(df, tp_mult=2, sl_mult=1, max_candles=MAX_CANDLES)
-    print("Feature columns:", df.columns.tolist())
-    print("Sample data:\n", df.tail(2))
-    return df.dropna()
-
-def calc_dmi(df):
-    adx = ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14)
-    return adx.adx().iloc[-1], adx.adx_pos().iloc[-1], adx.adx_neg().iloc[-1]
-
-def rule_based_check(df):
-    price = df['close'].iloc[-1]
-    breakout_threshold = df['close'].iloc[-100:].quantile(0.7)
-    roc_5 = df['close'].pct_change(5).iloc[-1] * 100
-    adx_val, adx_pos, adx_neg = calc_dmi(df)
-    bullish = price > breakout_threshold and roc_5 > 0.5 and adx_val > 20 and adx_pos > adx_neg
-    print(f"Rule-based check: price={price}, breakout_threshold={breakout_threshold}, roc_5={roc_5}, adx_val={adx_val}, adx_pos={adx_pos}, adx_neg={adx_neg}, bullish={bullish}")
-    return bullish, adx_val
-
-def train_models(symbol):
-    csv_path = os.path.join(DATA_DIR, f"{symbol.replace('-', '_')}.csv")
-    if not os.path.exists(csv_path):
-        print(f"train_models: No CSV for {symbol}")
-        return None, None
-    df = pd.read_csv(csv_path, parse_dates=['timestamp'])
-    df = create_features_and_label(df)
-    features = ['roc_5', 'roc_15', 'adx', 'adx_pos', 'adx_neg', 'hour', 'day', 'atr']
-    X = df[features]
-    y = df['target']
-    y_reg = df['duration_to_tp_sl_atr'].clip(30, 720)
-    value_counts = y.value_counts()
-    print("Target distribution:", value_counts.to_dict())
-    if len(value_counts) < 2 or (value_counts < 2).any():
-        print("train_models: Not enough class variety for classification.")
-        return None, None
-    X_train, X_val, y_train, y_val, yreg_train, yreg_val = train_test_split(
-        X, y, y_reg, test_size=0.2, stratify=y, random_state=42
+def format_signal(sym, details, news_headlines):
+    asset_pair, base = get_asset_pair(sym)
+    conf_percent = int(round(details['confidence'] * 100))
+    b_count = sum(1 for n in news_headlines if n['sentiment'] > 0)
+    r_count = sum(1 for n in news_headlines if n['sentiment'] < 0)
+    news_str = ""
+    if news_headlines:
+        news_str = f"📊News for asset B={b_count}, R={r_count}\n"
+        for n in news_headlines:
+            prefix = "🟢" if n['sentiment'] > 0 else "🔴"
+            news_str += f"{prefix} {n['headline']}\n"
+    return (
+        f"🚀 *{details['direction']} Signal*\n"
+        f"📈 Asset: *{base} ({asset_pair})*\n"
+        f"🔍 Confidence: {conf_percent}%\n"
+        f"🔺 *Breakout Above*: ${details['breakout']:.4f}\n"
+        f"💰 Current Price: ${details['price']:.4f}\n"
+        f"⏱️ Trade Duration: {details['duration']} minutes\n"
+        f"🛑 Stop Loss: ${details['sl']:.4f}\n"
+        f"🎯 Take Profit: ${details['tp']:.4f}\n"
+        f"{news_str}"
     )
-    model_cls = xgb.XGBClassifier(use_label_encoder=False, eval_metric='logloss', verbosity=0)
-    model_cls.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
-    model_reg = xgb.XGBRegressor(objective='reg:squarederror')
-    model_reg.fit(X_train, yreg_train, eval_set=[(X_val, yreg_val)], verbose=False)
-    model_cls.save_model(os.path.join(MODEL_DIR, f"{symbol.replace('-', '_')}_xgb_cls.json"))
-    model_reg.save_model(os.path.join(MODEL_DIR, f"{symbol.replace('-', '_')}_xgb_reg.json"))
-    print(f"Trained models for {symbol}")
-    return model_cls, model_reg
-
-def load_models(symbol):
-    cls_path = os.path.join(MODEL_DIR, f"{symbol.replace('-', '_')}_xgb_cls.json")
-    reg_path = os.path.join(MODEL_DIR, f"{symbol.replace('-', '_')}_xgb_reg.json")
-    if not os.path.exists(cls_path) or not os.path.exists(reg_path):
-        print(f"Model files missing for {symbol}")
-        return None, None
-    model_cls = xgb.XGBClassifier()
-    model_cls.load_model(cls_path)
-    model_reg = xgb.XGBRegressor()
-    model_reg.load_model(reg_path)
-    print(f"Loaded models for {symbol}")
-    return model_cls, model_reg
-
-def predict_breakout(df, model_cls):
-    features = ['roc_5', 'roc_15', 'adx', 'adx_pos', 'adx_neg', 'hour', 'day', 'atr']
-    latest = df.iloc[-1:]
-    proba = model_cls.predict_proba(latest[features])[0][1]
-    print(f"Predicted breakout probability: {proba}")
-    return proba
-
-def predict_duration(df, model_reg):
-    features = ['roc_5', 'roc_15', 'adx', 'adx_pos', 'adx_neg', 'hour', 'day', 'atr']
-    latest = df.iloc[-1:]
-    duration = model_reg.predict(latest[features])[0]
-    duration = int(np.clip(round(duration), 30, 720))
-    print(f"Predicted duration: {duration}")
-    return duration
-
-def save_ohlcv(symbol, df):
-    path = os.path.join(DATA_DIR, f"{symbol.replace('-', '_')}.csv")
-    df.to_csv(path, index=False)
-    print(f"Saved OHLCV for {symbol} to {path}")
-
-def format_signal_line(base, symbol, confidence_pct, roc_5, roc_15, news_str, breakout_level, price, duration, sl, tp, sl_atr=None, tp_atr=None, duration_atr=None):
-    msg = (
-        f"🚀 *{base.upper()}* ({symbol.replace('-', '/')})\n"
-        f"  Confidence: {confidence_pct}% | ROC5: {roc_5:.2f}% | ROC15: {roc_15:.2f}% | News: {news_str}\n"
-        f"  Breakout > ${breakout_level:.4f} | Price: ${price:.4f} | ML-Duration: {duration}min\n"
-        f"  SL: ${sl:.4f} | TP: ${tp:.4f}\n"
-    )
-    if sl_atr is not None and tp_atr is not None:
-        msg += f"  ATR-Stop: ${sl_atr:.4f} | ATR-Target: ${tp_atr:.4f}\n"
-    if duration_atr is not None:
-        if duration_atr > 0:
-            msg += f"  ATR-ML duration: {duration_atr} bars (to TP)\n"
-        elif duration_atr < 0:
-            msg += f"  ATR-ML duration: {-duration_atr} bars (to SL)\n"
-        else:
-            msg += f"  ATR-ML duration: not hit in 1h\n"
-    msg += f"  Max duration: 1 hour\n"
-    return msg
 
 def main():
-    print("Starting main()")
-    kucoin_symbols = fetch_kucoin_usdt_symbols()
-    print(f"Symbols to analyze: {len(kucoin_symbols)}")
-    kucoin_bases = set([sym['base'].upper() for sym in kucoin_symbols])
-    print("Sample KuCoin bases:", sorted(list(kucoin_bases))[:20], "... total:", len(kucoin_bases))
+    now_utc = datetime.utcnow()
+    now_bst = now_utc + timedelta(hours=1)
+    date_str = now_bst.strftime("%A, %d %B %Y %H:%M BST")
 
-    # --- BYPASS CMC FILTER: Use all KuCoin bases as available_bases ---
-    available_bases = list(kucoin_bases)
-    print("CMC filter bypassed: available_bases = all KuCoin bases.")
-    print("Available bases after bypass:", sorted(list(available_bases))[:20], "... total:", len(available_bases))
+    syms = top_symbols(TOP_N_SYMBOLS)
+    bullish_signals = []
+    bearish_signals = []
+    trade_details = {}
+    asset_sentiment = {}
 
-    news_sentiment = fetch_news_sentiment()
-    market_bullish_news = 0
-    market_bearish_news = 0
-    try:
-        resp = requests.get(CRYPTOCOMPARE_NEWS_URL, headers={'Authorization': f'Apikey {CRYPTOCOMPARE_API_KEY}'}, timeout=10)
-        resp.raise_for_status()
-        news_data = resp.json().get('Data', [])
-        for article in news_data:
-            title = article.get('title', '').lower()
-            is_bullish = any(word in title for word in [
-                'rise', 'bull', 'breakout', 'gain', 'pump', 'spike', 'surge', 'rally',
-                'altcoin season', 'altcoin rally', 'crypto surge', 'market breakout', 'ath', 'all time high'
-            ])
-            is_bearish = any(word in title for word in [
-                'fall', 'bear', 'drop', 'crash', 'dump', 'slump', 'plunge', 'collapse', 'market correction'
-            ])
-            if is_bullish:
-                market_bullish_news += 1
-            if is_bearish:
-                market_bearish_news += 1
-    except Exception as e:
-        print("Market news fetch failed:", e)
+    for s in syms:
+        try:
+            df4 = fetch_klines(s, '4h', 100)
+            df1 = fetch_klines(s, '1h', 100)
+            df15 = fetch_klines(s, '15m', 100)
+            if df4.empty or df1.empty or df15.empty:
+                continue
+            feats = {}
+            feats.update(compute_tf_features(df4, '4h'))
+            feats.update(compute_tf_features(df1, '1h'))
+            feats.update(compute_tf_features(df15, '15m'))
+            feats['ema_4h'] = feats['ema_4h']
+            feats['ema_1h'] = feats['ema_1h']
+            feats['ema_15m'] = feats['ema_15m']
 
-    analyzed_pairs = []
-    skipped_pairs = []
-    signals_sent = 0
-    bullish_news_total = 0
-    bearish_news_total = 0
-
-    signals = []
-    for sym_info in kucoin_symbols:
-        symbol = sym_info['symbol']
-        base = sym_info['base'].upper()
-        quote = sym_info['quote']
-        print(f"\n--- Analyzing {symbol} ---")
-        if base not in available_bases:
-            print(f"{symbol} skipped: base not in available_bases")
-            skipped_pairs.append(symbol)
-            continue
-
-        df = fetch_kucoin_ohlcv(symbol, interval=CANDLE_INTERVAL, limit=200)
-        if df is None:
-            print(f"{symbol} skipped: no OHLCV data")
-            skipped_pairs.append(symbol)
-            continue
-        if len(df) < 30:
-            print(f"{symbol} skipped: not enough OHLCV rows")
-            skipped_pairs.append(symbol)
-            continue
-
-        save_ohlcv(symbol, df)
-
-        model_cls, model_reg = load_models(symbol)
-        cls_path = os.path.join(MODEL_DIR, f"{symbol.replace('-', '_')}_xgb_cls.json")
-        reg_path = os.path.join(MODEL_DIR, f"{symbol.replace('-', '_')}_xgb_reg.json")
-        retrain_needed = True
-        if os.path.exists(cls_path) and os.path.exists(reg_path):
-            mtime = datetime.utcfromtimestamp(os.path.getmtime(cls_path))
-            if (datetime.utcnow() - mtime).days < 3:
-                retrain_needed = False
-        if model_cls is None or model_reg is None or retrain_needed:
-            print(f"Training models for {symbol} ...")
-            model_cls, model_reg = train_models(symbol)
-            if model_cls is None or model_reg is None:
-                print(f"{symbol} skipped: could not train models")
-                skipped_pairs.append(symbol)
+            main_features = [
+                'rsi_4h', 'ema_4h', 'ema_1h', 'ema_15m', 'adx_4h', 'atr_4h',
+                'macd_hist_15m', 'macd_hist_1h', 'macd_hist_4h'
+            ]
+            if any(np.isnan(feats.get(x, np.nan)) for x in main_features):
                 continue
 
-        df = create_features_and_label(df)
-        bullish, adx_val = rule_based_check(df)
-        if not bullish:
-            print(f"{symbol} skipped: rule-based check failed")
-            skipped_pairs.append(symbol)
+            price = df4['close'].iloc[-1]
+            atr = feats['atr_4h']
+            breakout_level = get_breakout_level(df4)
+
+            is_bull, conf_bull = decide_signal_and_confidence(feats, "BULLISH")
+            if is_bull:
+                tp = price + 2 * atr
+                sl = price - 1.4 * atr
+                duration = estimate_trade_duration(price, atr)
+                bullish_signals.append(s)
+                trade_details[s] = {
+                    "direction": "BULLISH",
+                    "confidence": conf_bull,
+                    "breakout": breakout_level,
+                    "price": price,
+                    "tp": tp,
+                    "sl": sl,
+                    "duration": duration
+                }
+
+            is_bear, conf_bear = decide_signal_and_confidence(feats, "BEARISH")
+            if is_bear:
+                tp = price - 2 * atr
+                sl = price + 1.4 * atr
+                duration = estimate_trade_duration(price, atr)
+                bearish_signals.append(s)
+                trade_details[s] = {
+                    "direction": "BEARISH",
+                    "confidence": conf_bear,
+                    "breakout": breakout_level,
+                    "price": price,
+                    "tp": tp,
+                    "sl": sl,
+                    "duration": duration
+                }
+
+            news_headlines = fetch_cryptocompare_news(s)
+            asset_sentiment[s] = news_headlines
+        except Exception:
             continue
 
-        proba = predict_breakout(df, model_cls)
+    header = f"*🚀 DAily CRYPTO TRADE SIGNAL  — {date_str}*"
+    msg = header + "\n"
 
-        coin_key = symbol.replace("-", "").upper()
-        news_counts = news_sentiment.get(coin_key, {"bullish": 0, "bearish": 0})
-        bullish_news = news_counts["bullish"]
-        bearish_news = news_counts["bearish"]
-        bullish_news_total += bullish_news
-        bearish_news_total += bearish_news
+    if bullish_signals:
+        for sym in bullish_signals[:3]:
+            msg += format_signal(sym, trade_details[sym], asset_sentiment.get(sym, [])) + "\n"
+    if bearish_signals:
+        for sym in bearish_signals[:3]:
+            msg += format_signal(sym, trade_details[sym], asset_sentiment.get(sym, [])) + "\n"
+    if not bullish_signals and not bearish_signals:
+        msg += "No actionable signals found today.\n"
 
-        total_bullish = bullish_news + market_bullish_news // 5
-        total_bearish = bearish_news + market_bearish_news // 5
+    # Ready for deployment: msg variable contains the summary for downstream use
 
-        if total_bullish + total_bearish > 0:
-            news_factor = 0.5 + 0.25 * (total_bullish - total_bearish) / (total_bullish + total_bearish)
-        else:
-            news_factor = 0.5
-
-        confidence = proba * 0.8 + news_factor * 0.2
-        print(f"Signal confidence: {confidence} (threshold: {CONFIDENCE_THRESHOLD})")
-        if confidence < CONFIDENCE_THRESHOLD:
-            print(f"{symbol} skipped: confidence below threshold")
-            analyzed_pairs.append(symbol)
-            continue
-
-        roc_5 = df['roc_5'].iloc[-1] if 'roc_5' in df.columns else df['close'].pct_change(5).iloc[-1] * 100
-        roc_15 = df['roc_15'].iloc[-1] if 'roc_15' in df.columns else df['close'].pct_change(15).iloc[-1] * 100
-        breakout_level = df['close'].iloc[-100:].quantile(0.7)
-        price = df['close'].iloc[-1]
-        duration = predict_duration(df, model_reg)
-        sl = price * 0.985
-        tp = price * 1.04
-        sl_atr = df['sl_atr'].iloc[-1]
-        tp_atr = df['tp_atr'].iloc[-1]
-        duration_atr = df['duration_to_tp_sl_atr'].iloc[-1] if 'duration_to_tp_sl_atr' in df.columns else None
-        confidence_pct = int(confidence * 100)
-        news_str = f"B{total_bullish}/R{total_bearish}"
-
-        signals.append(format_signal_line(
-            base, symbol, confidence_pct, roc_5, roc_15, news_str,
-            breakout_level, price, duration, sl, tp, sl_atr, tp_atr, duration_atr
-        ))
-        signals_sent += 1
-        analyzed_pairs.append(symbol)
-        print(f"{symbol}: SIGNAL SENT")
-
-    print("\n===== FINAL SUMMARY =====")
-    print(f"Analyzed pairs: {len(analyzed_pairs)}")
-    print(f"Skipped pairs: {len(skipped_pairs)}")
-    print(f"Sent signals: {signals_sent}")
-    print(f"Bullish news items: {bullish_news_total} (market-wide: {market_bullish_news})")
-    print(f"Bearish news items: {bearish_news_total} (market-wide: {market_bearish_news})")
-    print(f"--- {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC - Bot Finished ---")
-
-    if signals:
-        uk_time = get_uk_time_header()
-        full_message = (
-            f"{uk_time}\n\n"
-            f"*ALERT: {signals_sent} Trade Signals*\n\n" +
-            "\n".join(signals)
-        )
-        send_telegram_message(full_message)
-    else:
-        send_telegram_message(f"{get_uk_time_header()}\n\nNo qualifying trade signals found this run.")
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
