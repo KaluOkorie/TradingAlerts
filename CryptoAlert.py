@@ -67,10 +67,15 @@ COIN_ALIASES = {
     "RENDERUSDT": ["RENDERUSDT", "RNDR", "Render"],
 }
 
-sentiment_pipe = pipeline(
-    "sentiment-analysis",
-    model="distilbert-base-uncased-finetuned-sst-2-english"
-)
+# Robust sentiment pipeline loading
+try:
+    sentiment_pipe = pipeline(
+        "sentiment-analysis",
+        model="distilbert-base-uncased-finetuned-sst-2-english"
+    )
+except Exception as e:
+    print(f"[DEBUG] Sentiment model load failed: {e}")
+    sentiment_pipe = None
 
 def compute_macd(series, fast=12, slow=26, signal=9):
     ema_fast = series.ewm(span=fast, adjust=False).mean()
@@ -143,14 +148,20 @@ def fetch_cryptocompare_news(symbol):
             # STRICT: Only check the title for alias as a whole word
             if re.search(alias_pattern, title, flags=re.IGNORECASE):
                 text = title[:512]
-                if text:
-                    r = sentiment_pipe(text)[0]
-                    if r['label'] == 'POSITIVE' and len(bull) < 2:
-                        bull.append({'sentiment': 1, 'headline': title})
-                    elif r['label'] == 'NEGATIVE' and len(bear) < 2:
-                        bear.append({'sentiment': -1, 'headline': title})
-                if len(bull) == 2 and len(bear) == 2:
-                    break
+                if text and sentiment_pipe is not None:
+                    try:
+                        r = sentiment_pipe(text)[0]
+                        if r['label'] == 'POSITIVE' and len(bull) < 2:
+                            bull.append({'sentiment': 1, 'headline': title})
+                        elif r['label'] == 'NEGATIVE' and len(bear) < 2:
+                            bear.append({'sentiment': -1, 'headline': title})
+                        if len(bull) == 2 and len(bear) == 2:
+                            break
+                    except Exception as sentiment_error:
+                        print(f"[DEBUG] Sentiment analysis error: {sentiment_error}")
+                        continue
+            if len(bull) == 2 and len(bear) == 2:
+                break
         headlines = bull + bear
         print(f"[DEBUG] STRICT News for {symbol}: {headlines}")
         return headlines
