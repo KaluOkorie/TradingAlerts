@@ -77,32 +77,6 @@ except Exception as e:
     print(f"[DEBUG] Sentiment model load failed: {e}")
     sentiment_pipe = None
 
-def compute_macd(series, fast=12, slow=26, signal=9):
-    ema_fast = series.ewm(span=fast, adjust=False).mean()
-    ema_slow = series.ewm(span=slow, adjust=False).mean()
-    macd = ema_fast - ema_slow
-    signal_line = macd.ewm(span=signal, adjust=False).mean()
-    histogram = macd - signal_line
-    return macd.iloc[-1], signal_line.iloc[-1], histogram.iloc[-1]
-
-def compute_tf_features(df, tf_label):
-    feat = {}
-    feat[f'ema_{tf_label}'] = ta.ema(df['close'], length=1).shift(1)
-    feat[f'rsi_{tf_label}'] = ta.rsi(df['close'], length=14).shift(1)
-    feat[f'atr_{tf_label}'] = ta.atr(df['high'], df['low'], df['close'], length=14).shift(1)
-    adx = ta.adx(df['high'], df['low'], df['close'], length=14)
-    feat[f'adx_{tf_label}'] = adx['ADX_14'].shift(1)
-    prior_high = df['high'].shift(1).rolling(20).max()
-    feat[f'breakout_{tf_label}'] = (df['close'] > prior_high).astype(int)
-    macd, macd_signal, macd_hist = compute_macd(df['volume'])
-    feat[f'macd_{tf_label}'] = macd
-    feat[f'macd_signal_{tf_label}'] = macd_signal
-    feat[f'macd_hist_{tf_label}'] = macd_hist
-    for k in feat:
-        if hasattr(feat[k], "iloc"):
-            feat[k] = feat[k].iloc[-1]
-    return feat
-
 def fetch_klines(symbol, interval, limit):
     url = f"{BINANCE_API}/klines"
     params = {"symbol": symbol, "interval": interval, "limit": limit}
@@ -122,6 +96,7 @@ def fetch_klines(symbol, interval, limit):
         ])
         for col in ["open", "high", "low", "close", "volume"]:
             df[col] = pd.to_numeric(df[col], errors="coerce")
+        df['timestamp'] = pd.to_datetime(df['open_time'], unit='ms').dt.tz_localize(None)
         return df
     except Exception as e:
         print(f"[DEBUG] fetch_klines Exception for {symbol} {interval}: {e}")
@@ -145,7 +120,6 @@ def fetch_cryptocompare_news(symbol):
         bull, bear = [], []
         for post in news_data:
             title = post.get("title", "")
-            # STRICT: Only check the title for alias as a whole word
             if re.search(alias_pattern, title, flags=re.IGNORECASE):
                 text = title[:512]
                 if text and sentiment_pipe is not None:
@@ -180,59 +154,6 @@ def top_symbols(n):
     except Exception as e:
         print(f"[DEBUG] Error fetching top symbols: {e}")
         return []
-
-def decide_signal_and_confidence(feats, direction, rsi_threshold=45, adx_threshold=20):
-    if direction == "BULLISH":
-        ema_chain = feats['ema_1h'] > feats['ema_4h']
-        rsi_fav = feats['rsi_4h'] > rsi_threshold
-        adx_ok = feats['adx_4h'] > adx_threshold
-        breakout_4h = feats['breakout_4h']
-        macd_1h_pos = feats['macd_hist_1h'] > 0
-        conditions = [ema_chain, rsi_fav, adx_ok, breakout_4h]
-        entry = (sum(conditions) >= 3) and macd_1h_pos
-        ema_conf = 1.0 if ema_chain else 0.0
-        adx_conf = min(max((feats['adx_4h'] - adx_threshold) / 40.0, 0), 1)
-        rsi_conf = min(max((feats['rsi_4h'] - rsi_threshold) / (100 - rsi_threshold), 0), 1)
-        macd_conf = 1.0 if macd_1h_pos else 0.0
-        confidence = (
-            0.45 * ema_conf +
-            0.25 * adx_conf +
-            0.20 * rsi_conf +
-            0.10 * macd_conf
-        )
-        print(f"[DEBUG] BULLISH: EMA_CHAIN={ema_chain}, RSI_FAV={rsi_fav}, ADX_OK={adx_ok}, BREAKOUT_4H={breakout_4h}, MACD_1h_POS={macd_1h_pos} | entry={entry} conf={confidence:.2f}")
-    else:  # BEARISH
-        ema_chain = feats['ema_1h'] < feats['ema_4h']
-        rsi_fav = feats['rsi_4h'] < rsi_threshold
-        adx_ok = feats['adx_4h'] > adx_threshold
-        breakout_4h = feats['breakout_4h']
-        macd_1h_neg = feats['macd_hist_1h'] < 0
-        conditions = [ema_chain, rsi_fav, adx_ok, breakout_4h]
-        entry = (sum(conditions) >= 3) and macd_1h_neg
-        ema_conf = 1.0 if ema_chain else 0.0
-        adx_conf = min(max((feats['adx_4h'] - adx_threshold) / 40.0, 0), 1)
-        rsi_conf = min(max((rsi_threshold - feats['rsi_4h']) / rsi_threshold, 0), 1)
-        macd_conf = 1.0 if macd_1h_neg else 0.0
-        confidence = (
-            0.45 * ema_conf +
-            0.25 * adx_conf +
-            0.20 * rsi_conf +
-            0.10 * macd_conf
-        )
-        print(f"[DEBUG] BEARISH: EMA_CHAIN={ema_chain}, RSI_FAV={rsi_fav}, ADX_OK={adx_ok}, BREAKOUT_4H={breakout_4h}, MACD_1h_NEG={macd_1h_neg} | entry={entry} conf={confidence:.2f}")
-    return entry, min(confidence, 1.0)
-
-def estimate_trade_duration(price, atr):
-    atr_ratio = atr / price
-    if atr_ratio > 0.03:
-        return round(10, 1)
-    elif atr_ratio > 0.01:
-        return round(40, 1)
-    else:
-        return round(120, 1)
-
-def get_breakout_level(df4):
-    return df4['high'].shift(1).rolling(20).max().iloc[-1]
 
 def get_asset_pair(symbol):
     if symbol.endswith("USDT"):
@@ -284,6 +205,100 @@ def send_tel(msg):
         except Exception as e:
             print(f"[DEBUG] Telegram send exception: {e}")
 
+def apply_indicators(df):
+    df['rsi_fast'] = ta.rsi(df['close'], length=7)
+    df['rsi_slow'] = ta.rsi(df['close'], length=14)
+    adx = ta.adx(df['high'], df['low'], df['close'], length=14)
+    df['adx'] = adx['ADX_14']
+    macd = ta.macd(df['close'])
+    df['macd_line'] = macd['MACD_12_26_9']
+    df['macd_signal'] = macd['MACDs_12_26_9']
+    ichimoku, _ = ta.ichimoku(df['high'], df['low'], df['close'])
+    df['tenkan'] = ichimoku['ITS_9']
+    df['kijun'] = ichimoku['IKS_26']
+    bbands = ta.bbands(df['close'], length=20)
+    df['bb_upper'] = bbands['BBU_20_2.0']
+    df['bb_middle'] = bbands['BBM_20_2.0']
+    df['bb_lower'] = bbands['BBL_20_2.0']
+    df['ma'] = df['close'].rolling(window=20).mean()
+    df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=14)
+    df = halftrend(df, length=10, multiplier=2)
+    return df
+
+def halftrend(df, length=10, multiplier=2):
+    hl2 = (df['high'] + df['low']) / 2
+    atr = ta.atr(df['high'], df['low'], df['close'], length=length)
+    trend = pd.Series(index=df.index, dtype='float64')
+    up = hl2 - multiplier * atr
+    dn = hl2 + multiplier * atr
+    trend.iloc[0] = 0
+    for i in range(1, len(df)):
+        if hl2.iloc[i] > up.iloc[i-1]:
+            trend.iloc[i] = 1
+        elif hl2.iloc[i] < dn.iloc[i-1]:
+            trend.iloc[i] = -1
+        else:
+            trend.iloc[i] = trend.iloc[i-1]
+    df['halftrend'] = trend
+    return df
+
+def signal_generator(df):
+    df['signal'] = 0
+    for i in range(1, len(df)):
+        if (
+            df['rsi_fast'][i] > 50 and
+            df['adx'][i] > 25 and
+            df['macd_line'][i] > 0 and
+            df['rsi_fast'][i] > df['rsi_slow'][i] and
+            df['tenkan'][i] > df['kijun'][i] and
+            df['close'][i] > df['ma'][i] and
+            df['close'][i-1] <= df['ma'][i-1] and
+            df['halftrend'][i] == 1
+        ):
+            df.loc[i, 'signal'] = 1  # Buy
+        elif (
+            df['rsi_fast'][i] < 50 and
+            df['adx'][i] > 25 and
+            df['macd_line'][i] < 0 and
+            df['rsi_fast'][i] < df['rsi_slow'][i] and
+            df['tenkan'][i] < df['kijun'][i] and
+            df['close'][i] < df['ma'][i] and
+            df['close'][i-1] >= df['ma'][i-1] and
+            df['halftrend'][i] == -1
+        ):
+            df.loc[i, 'signal'] = -1  # Sell
+    return df
+
+def compute_dynamic_confidence(latest):
+    checks = [
+        latest['rsi_fast'] > 50,
+        latest['adx'] > 25,
+        latest['macd_line'] > 0,
+        latest['rsi_fast'] > latest['rsi_slow'],
+        latest['tenkan'] > latest['kijun'],
+        latest['close'] > latest['ma'],
+        latest['halftrend'] == 1
+    ]
+    score = sum(checks)
+    total = len(checks)
+    confidence = score / total
+    return confidence
+
+def compute_dynamic_confidence_bear(latest):
+    checks = [
+        latest['rsi_fast'] < 50,
+        latest['adx'] > 25,
+        latest['macd_line'] < 0,
+        latest['rsi_fast'] < latest['rsi_slow'],
+        latest['tenkan'] < latest['kijun'],
+        latest['close'] < latest['ma'],
+        latest['halftrend'] == -1
+    ]
+    score = sum(checks)
+    total = len(checks)
+    confidence = score / total
+    return confidence
+
 def main():
     now_utc = datetime.utcnow()
     now_bst = now_utc + timedelta(hours=1)
@@ -299,67 +314,57 @@ def main():
     for s in syms:
         try:
             print(f"[DEBUG] Processing {s}")
-            df4 = fetch_klines(s, '4h', 100)
-            df1 = fetch_klines(s, '1h', 100)
-            if df4.empty or df1.empty:
+            df = fetch_klines(s, '1h', 500)
+            if df.empty:
                 print(f"[DEBUG] Empty df for {s}")
                 continue
-            feats = {}
-            feats.update(compute_tf_features(df4, '4h'))
-            feats.update(compute_tf_features(df1, '1h'))
-            feats['ema_4h'] = feats['ema_4h']
-            feats['ema_1h'] = feats['ema_1h']
-
-            main_features = [
-                'rsi_4h', 'ema_4h', 'ema_1h', 'adx_4h', 'atr_4h',
-                'macd_hist_1h', 'macd_hist_4h'
-            ]
-            if any(np.isnan(feats.get(x, np.nan)) for x in main_features):
-                print(f"[DEBUG] NaN feature for {s}")
+            df = apply_indicators(df)
+            df = signal_generator(df)
+            two_weeks_ago = pd.Timestamp.utcnow() - pd.Timedelta(days=14)
+            df = df[df['timestamp'] >= two_weeks_ago].reset_index(drop=True)
+            if df.empty:
+                print(f"[DEBUG] No recent data for {s}")
                 continue
+            latest = df.iloc[-1]
+            price = latest['close']
+            atr = latest['atr']
+            breakout_level = df['high'].shift(1).rolling(20).max().iloc[-1]
+            direction = None
+            confidence = 0
+            tp = sl = duration = None
 
-            price = df4['close'].iloc[-1]
-            atr = feats['atr_4h']
-            breakout_level = get_breakout_level(df4)
+            if latest['signal'] == 1:
+                confidence = compute_dynamic_confidence(latest)
+                if confidence > 0.65:
+                    direction = "BULLISH"
+                    tp = price + 2 * atr
+                    sl = price - 1.4 * atr
+                    duration = 60
+                    bullish_signals.append(s)
+            elif latest['signal'] == -1:
+                confidence = compute_dynamic_confidence_bear(latest)
+                if confidence > 0.65:
+                    direction = "BEARISH"
+                    tp = price - 2 * atr
+                    sl = price + 1.4 * atr
+                    duration = 60
+                    bearish_signals.append(s)
 
-            is_bull, conf_bull = decide_signal_and_confidence(feats, "BULLISH")
-            if is_bull and conf_bull >= 0.6:
-                tp = price + 2 * atr
-                sl = price - 1.4 * atr
-                duration = estimate_trade_duration(price, atr)
-                bullish_signals.append(s)
+            if direction:
                 trade_details[s] = {
-                    "direction": "BULLISH",
-                    "confidence": conf_bull,
+                    "direction": direction,
+                    "confidence": confidence,
                     "breakout": breakout_level,
                     "price": price,
                     "tp": tp,
                     "sl": sl,
                     "duration": duration
                 }
-
-            is_bear, conf_bear = decide_signal_and_confidence(feats, "BEARISH")
-            if is_bear and conf_bear >= 0.6:
-                tp = price - 2 * atr
-                sl = price + 1.4 * atr
-                duration = estimate_trade_duration(price, atr)
-                bearish_signals.append(s)
-                trade_details[s] = {
-                    "direction": "BEARISH",
-                    "confidence": conf_bear,
-                    "breakout": breakout_level,
-                    "price": price,
-                    "tp": tp,
-                    "sl": sl,
-                    "duration": duration
-                }
-
             news_headlines = fetch_cryptocompare_news(s)
             asset_sentiment[s] = news_headlines
         except Exception as e:
             print(f"[DEBUG] Error processing {s}: {e}")
             continue
-
     header = f"*🚀 DAily CRYPTO TRADE SIGNAL  — {date_str}*"
     msg = header + "\n"
 
@@ -370,7 +375,7 @@ def main():
         for sym in bearish_signals[:3]:
             msg += format_signal(sym, trade_details[sym], asset_sentiment.get(sym, [])) + "\n"
     if not bullish_signals and not bearish_signals:
-        msg += "*No singal found *\n"
+        msg += "*No signal found*\n"
 
     print("[DEBUG] ------------------ FINAL SIGNAL SUMMARY ------------------")
     for sym in bullish_signals:
@@ -378,7 +383,7 @@ def main():
     for sym in bearish_signals:
         print(f"BEARISH: {sym} | Conf: {trade_details[sym]['confidence']:.2f} | Price: {trade_details[sym]['price']:.4f}")
     if not bullish_signals and not bearish_signals:
-        print("*No singal found *")
+        print("*No signal found*")
 
     send_tel(msg)
 
